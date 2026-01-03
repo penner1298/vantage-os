@@ -45,8 +45,8 @@ import {
 
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
 
-// NOTE: To use Vercel Env Vars in production, uncomment the line below:
-// const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+// Note: To use environment variables, ensure your build target supports ES2020 or later.
+// For this deployment, we default to an empty string to ensure compatibility.
 const apiKey = ""; 
 
 // Robust Gemini Call combining retry logic from VANTAGE with Context from TRACKER
