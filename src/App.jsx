@@ -46,8 +46,9 @@ import {
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
 
 // Note: To use environment variables, ensure your build target supports ES2020 or later.
-// For this deployment, we default to an empty string to ensure compatibility.
-const apiKey = ""; 
+// For this deployment, we default to an empty string to ensure compatibility and prevent build warnings.
+// const apiKey = import.meta.env.VITE_GEMINI_API_KEY || ""; 
+const apiKey = "";
 
 // Robust Gemini Call combining retry logic from VANTAGE with Context from TRACKER
 const callGemini = async (prompt, systemContext = "general", retries = 3) => {
@@ -208,11 +209,21 @@ const WarRoomModal = ({ item, onClose }) => {
 const generateIntel = () => {
   const topics = ["Capital Gains Tax", "Hwy 167 Funding", "Rent Control", "Carbon Auction", "Ferry System"];
   const sources = ["The Stranger", "Seattle Times", "Publicola", "Shift WA", "House Dems"];
+  const urls = {
+    "The Stranger": "https://www.thestranger.com",
+    "Seattle Times": "https://www.seattletimes.com",
+    "Publicola": "https://publicola.com",
+    "Shift WA": "https://shiftwa.org",
+    "House Dems": "https://housedemocrats.wa.gov"
+  };
+  const source = sources[Math.floor(Math.random() * sources.length)];
   const t = topics[Math.floor(Math.random() * topics.length)];
+  
   return {
     id: Math.random().toString(36).substr(2, 9),
     title: `${t} ${['Debated', 'Stalled', 'Advanced', 'Criticized'].sort(() => 0.5 - Math.random())[0]} in Committee`,
-    source: sources[Math.floor(Math.random() * sources.length)],
+    source: source,
+    url: urls[source], // Add URL property
     summary: `Reports indicate significant movement regarding ${t}. Implications for the upcoming session remain volatile.`,
     score: Math.floor(Math.random() * 5) + 5,
     date: 'Today, 9:42 AM'
@@ -357,7 +368,16 @@ export default function App() {
                   <span className="text-[10px] font-bold uppercase text-slate-500">{item.source}</span>
                   {item.score > 7 && <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100 flex items-center gap-1"><ShieldAlert size={10}/> PRIORITY</span>}
                 </div>
-                <h4 className="text-sm font-medium text-slate-900 leading-snug group-hover:text-blue-700">{item.title}</h4>
+                {/* Clickable Title in Mini Feed */}
+                <a 
+                  href={item.url} 
+                  target="_blank" 
+                  rel="noreferrer" 
+                  onClick={(e) => e.stopPropagation()} 
+                  className="text-sm font-medium text-slate-900 leading-snug group-hover:text-blue-700 hover:underline flex items-center gap-1"
+                >
+                  {item.title} <ExternalLink size={10} className="opacity-50"/>
+                </a>
                 <div className="mt-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button className="text-[10px] bg-slate-900 text-white px-2 py-1 rounded font-bold flex items-center gap-1"><PenTool size={10}/> WAR ROOM</button>
                 </div>
@@ -428,7 +448,14 @@ export default function App() {
                  <span className="text-[10px] text-slate-400">{item.date}</span>
                  {item.score > 7 && <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100 flex items-center gap-1"><ShieldAlert size={10}/> PRIORITY</span>}
                </div>
-               <h3 className="text-lg font-bold text-slate-900 mb-2">{item.title}</h3>
+               
+               {/* Clickable Title */}
+               <h3 className="text-lg font-bold text-slate-900 mb-2">
+                 <a href={item.url} target="_blank" rel="noreferrer" className="hover:underline hover:text-blue-700 flex items-center gap-2">
+                    {item.title} <ExternalLink size={16} className="text-slate-400"/>
+                 </a>
+               </h3>
+               
                <p className="text-sm text-slate-600">{item.summary}</p>
              </div>
              <div className="flex flex-row md:flex-col gap-2 justify-center md:border-l border-slate-100 md:pl-4 min-w-[140px]">
