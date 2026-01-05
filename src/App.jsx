@@ -53,7 +53,10 @@ import {
   Edit2,
   Trash2,
   Eye,
-  FileDown
+  FileDown,
+  File,
+  FolderOpen,
+  HardDrive
 } from 'lucide-react';
 
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
@@ -98,6 +101,37 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
     } catch (error) {
       if (i === retries - 1) return null;
       await delay(Math.pow(2, i) * 1000);
+    }
+  }
+};
+
+// Robust Fetch Utility with multiple proxy fallbacks
+const fetchProxyContent = async (targetUrl) => {
+  // Strategy 1: AllOrigins (Returns JSON with 'contents')
+  const tryAllOrigins = async () => {
+    const response = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`);
+    if (!response.ok) throw new Error(`AllOrigins status: ${response.status}`);
+    const data = await response.json();
+    return data.contents;
+  };
+
+  // Strategy 2: CorsProxy.io (Returns raw content)
+  const tryCorsProxy = async () => {
+    // Note: corsproxy.io usage is https://corsproxy.io/?<url>
+    const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`);
+    if (!response.ok) throw new Error(`CorsProxy status: ${response.status}`);
+    return await response.text();
+  };
+
+  try {
+    return await tryAllOrigins();
+  } catch (e1) {
+    console.warn("Primary proxy failed, trying backup...", e1);
+    try {
+      return await tryCorsProxy();
+    } catch (e2) {
+      console.error("Backup proxy failed", e2);
+      throw new Error("Unable to fetch content. External site may be blocking access.");
     }
   }
 };
@@ -155,18 +189,18 @@ const WA_COMMITTEES = [
 ];
 
 const INITIAL_BILLS = [
-  { id: "HB 2202", title: "Dental care pilot at Rainier School", status: "Prefiled", committee: "Human Services", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "High", year: "2026" },
-  { id: "HB 1564", title: "Child care B&O tax credit", status: "In Committee", committee: "Finance", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "High", year: "2025" },
-  { id: "HB 1818", title: "Modernizing subdivision/platting laws", status: "Floor Calendar", committee: "Local Government", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "Medium", year: "2025" },
-  { id: "HB 1051", title: "IEP team meetings/recording", status: "In Committee", committee: "Education", role: "Co-Sponsor", sponsor: "Rep. Walsh", priority: "Low", year: "2025" },
-  { id: "HB 1055", title: "Transparency ombuds study", status: "In Committee", committee: "Appropriations", role: "Co-Sponsor", sponsor: "Rep. Abbarno", priority: "Medium", year: "2025" },
-  { id: "HB 1086", title: "Motor vehicle chop shops", status: "In Committee", committee: "Community Safety", role: "Co-Sponsor", sponsor: "Rep. Low", priority: "Low", year: "2025" },
-  { id: "HB 1221", title: "Gubernatorial proclamations", status: "In Committee", committee: "State Government & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Volz", priority: "Medium", year: "2025" },
-  { id: "HB 1324", title: "Transportation funding/CCA", status: "In Committee", committee: "Transportation", role: "Co-Sponsor", sponsor: "Rep. Barkis", priority: "High", year: "2025" },
-  { id: "HB 1585", title: "Voter citizenship verif.", status: "In Committee", committee: "State Government & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Marshall", priority: "High", year: "2025" },
-  { id: "HB 2058", title: "Private entity audits", status: "In Committee", committee: "State Government & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Couture", priority: "High", year: "2025" },
-  { id: "HB 1106", title: "Disabled veterans/prop. tax", status: "Signed into Law", committee: "Finance", role: "Co-Sponsor", sponsor: "Rep. Barnard", priority: "High", year: "2025" },
-  { id: "HB 1414", title: "CTE careers work group", status: "Signed into Law", committee: "Education", role: "Co-Sponsor", sponsor: "Rep. Connors", priority: "Low", year: "2025" },
+  { id: "HB 2202", title: "Dental care pilot at Rainier School", status: "Prefiled", committee: "Human Services", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "High", year: "2026", documents: [] },
+  { id: "HB 1564", title: "Child care B&O tax credit", status: "In Committee", committee: "Finance", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "High", year: "2025", documents: [] },
+  { id: "HB 1818", title: "Modernizing subdivision/platting laws", status: "Floor Calendar", committee: "Local Government", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "Medium", year: "2025", documents: [] },
+  { id: "HB 1051", title: "IEP team meetings/recording", status: "In Committee", committee: "Education", role: "Co-Sponsor", sponsor: "Rep. Walsh", priority: "Low", year: "2025", documents: [] },
+  { id: "HB 1055", title: "Transparency ombuds study", status: "In Committee", committee: "Appropriations", role: "Co-Sponsor", sponsor: "Rep. Abbarno", priority: "Medium", year: "2025", documents: [] },
+  { id: "HB 1086", title: "Motor vehicle chop shops", status: "In Committee", committee: "Community Safety", role: "Co-Sponsor", sponsor: "Rep. Low", priority: "Low", year: "2025", documents: [] },
+  { id: "HB 1221", title: "Gubernatorial proclamations", status: "In Committee", committee: "State Government & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Volz", priority: "Medium", year: "2025", documents: [] },
+  { id: "HB 1324", title: "Transportation funding/CCA", status: "In Committee", committee: "Transportation", role: "Co-Sponsor", sponsor: "Rep. Barkis", priority: "High", year: "2025", documents: [] },
+  { id: "HB 1585", title: "Voter citizenship verif.", status: "In Committee", committee: "State Government & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Marshall", priority: "High", year: "2025", documents: [] },
+  { id: "HB 2058", title: "Private entity audits", status: "In Committee", committee: "State Government & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Couture", priority: "High", year: "2025", documents: [] },
+  { id: "HB 1106", title: "Disabled veterans/prop. tax", status: "Signed into Law", committee: "Finance", role: "Co-Sponsor", sponsor: "Rep. Barnard", priority: "High", year: "2025", documents: [] },
+  { id: "HB 1414", title: "CTE careers work group", status: "Signed into Law", committee: "Education", role: "Co-Sponsor", sponsor: "Rep. Connors", priority: "Low", year: "2025", documents: [] },
 ];
 
 const MY_COMMITTEES = {
@@ -212,42 +246,241 @@ const SimpleMarkdown = ({ text, onCitationClick }) => {
   );
 };
 
-// Updated Document Viewer to handle real content and simulated strings
 const DocumentViewer = ({ docData, onClose }) => {
   if (!docData) return null;
   
-  // Normalize input: if string, treat as title/citation. If object, use properties.
   const title = typeof docData === 'string' ? docData : docData.title;
   const content = typeof docData === 'string' ? null : docData.content;
+  const url = typeof docData === 'string' ? null : docData.url;
   
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl h-[80vh] flex flex-col border border-slate-200">
         <div className="h-14 bg-slate-800 text-white px-4 flex justify-between items-center shrink-0 rounded-t-xl">
           <div className="flex items-center gap-3">
              <div className="p-1.5 bg-white/10 rounded"><FileText size={18} /></div>
              <div className="flex flex-col">
                <h3 className="font-semibold text-sm line-clamp-1">{title}</h3>
-               <span className="text-[10px] text-slate-400">Imported from Legislative Server</span>
+               <span className="text-[10px] text-slate-400">
+                 {content ? "Viewing Local Copy" : "External Preview"}
+               </span>
              </div>
           </div>
-          <button onClick={onClose} className="hover:bg-red-500/80 p-2 rounded-full transition-colors"><X size={20} /></button>
+          <div className="flex items-center gap-2">
+            {url && (
+              <a href={url} target="_blank" rel="noreferrer" className="p-2 hover:bg-white/10 rounded text-slate-300 hover:text-white" title="Open External">
+                <ExternalLink size={18} />
+              </a>
+            )}
+            <button onClick={onClose} className="hover:bg-red-500/80 p-2 rounded-full transition-colors"><X size={20} /></button>
+          </div>
         </div>
         <div className="flex-1 bg-slate-100 overflow-y-auto p-8 flex justify-center">
            <div className="bg-white shadow-lg w-full max-w-3xl min-h-[800px] p-12 relative border border-slate-200">
              <div className="border-b-2 border-slate-800 pb-4 mb-6 text-center">
                <div className="uppercase tracking-widest text-slate-500 text-xs font-bold mb-2">Washington State Legislature</div>
                <h1 className="text-xl font-serif font-bold text-slate-900">{title}</h1>
-               <div className="text-sm text-slate-500 mt-1">Official Text</div>
+               {!content && <div className="text-xs text-red-500 mt-1">Live Preview Not Available - Click 'Open External'</div>}
              </div>
              <div className="space-y-4 font-serif text-slate-800 text-sm leading-relaxed whitespace-pre-line">
                {content ? content : (
                  <div className="text-center py-20 text-slate-400">
-                    <p className="italic">No text content available.</p>
+                    <p className="italic mb-4">Content has not been imported yet.</p>
+                    {url && <a href={url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline font-sans text-sm font-bold">Open Original Document &rarr;</a>}
                  </div>
                )}
              </div>
            </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// New Modal to Manage and Scan Bill Documents
+const BillDocumentsModal = ({ bill, onClose, onSave }) => {
+  const [isScanning, setIsScanning] = useState(false);
+  const [importingId, setImportingId] = useState(null);
+  const [documents, setDocuments] = useState(bill.documents || []);
+  const [statusMsg, setStatusMsg] = useState('');
+
+  const scanBillDocs = async () => {
+    setIsScanning(true);
+    setStatusMsg("Scanning legislative server...");
+    const number = bill.id.replace(/[^0-9]/g, '');
+    const year = bill.year || 2025;
+    const targetUrl = `https://app.leg.wa.gov/billsummary/?BillNumber=${number}&Year=${year}&Initiative=false`;
+    
+    try {
+      const contents = await fetchProxyContent(targetUrl);
+      if (!contents) throw new Error("Could not fetch bill summary page.");
+
+      // Look for lawfilesext links
+      const docRegex = /https:\/\/lawfilesext\.leg\.wa\.gov\/[^"']+/g;
+      const foundLinks = contents.match(docRegex) || [];
+      
+      const newDocs = foundLinks.map(link => {
+        let type = "Unknown";
+        if(link.includes("Pdf/Bills")) type = "Original Bill";
+        if(link.includes("Amendments")) type = "Amendment";
+        if(link.includes("Reports")) type = "Bill Report";
+        if(link.includes("Fiscal")) type = "Fiscal Note";
+
+        const fileName = link.split('/').pop();
+        return {
+          id: fileName, 
+          title: `${type} - ${fileName}`,
+          type: type,
+          url: link,
+          dateFound: new Date().toLocaleDateString(),
+          imported: false
+        };
+      });
+
+      // Filter duplicates
+      const uniqueDocs = [...documents];
+      let addedCount = 0;
+      newDocs.forEach(d => {
+        if(!uniqueDocs.find(ud => ud.url === d.url)) {
+          uniqueDocs.push({...d, isNew: true});
+          addedCount++;
+        }
+      });
+
+      setDocuments(uniqueDocs);
+      setStatusMsg(`Scan complete. Found ${addedCount} new documents.`);
+      
+    } catch (e) {
+      console.error(e);
+      setStatusMsg(`Scan failed: ${e.message}`);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const importDocContent = async (docIndex) => {
+    const docToImport = documents[docIndex];
+    setImportingId(docToImport.id);
+    setStatusMsg(`Importing ${docToImport.title}...`);
+    
+    try {
+      const contents = await fetchProxyContent(docToImport.url);
+      
+      if (!contents) throw new Error("Empty response from source.");
+      
+      // Safety check for Firestore size limit (approx 1MB)
+      if (contents.length > 900000) {
+        throw new Error("Document too large for database storage.");
+      }
+
+      // Basic HTML stripping if it's HTML, otherwise assume text
+      let cleanText = contents;
+      if (docToImport.url.endsWith('.htm') || docToImport.url.endsWith('.html') || contents.includes('<html')) {
+         const parser = new DOMParser();
+         const dom = parser.parseFromString(contents, 'text/html');
+         cleanText = dom.body.innerText;
+      }
+
+      const updatedDocs = [...documents];
+      updatedDocs[docIndex] = { 
+        ...docToImport, 
+        content: cleanText, 
+        imported: true,
+        importedDate: new Date().toLocaleDateString()
+      };
+      
+      setDocuments(updatedDocs);
+      setStatusMsg("Document imported successfully.");
+      
+      // Auto-save to parent bill immediately
+      onSave({ ...bill, documents: updatedDocs });
+
+    } catch (e) {
+      console.error(e);
+      setStatusMsg(`Import failed: ${e.message}`);
+    } finally {
+      setImportingId(null);
+    }
+  };
+
+  const saveAndClose = () => {
+    onSave({ ...bill, documents });
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-white p-6 rounded-xl max-w-3xl w-full shadow-2xl flex flex-col max-h-[85vh]">
+        <div className="flex justify-between items-start mb-4">
+          <div>
+            <h3 className="text-xl font-bold text-slate-900 flex items-center gap-2"><FolderOpen size={24} className="text-blue-600"/> Bill Resources</h3>
+            <p className="text-sm text-slate-500">{bill.id}: {bill.title}</p>
+          </div>
+          <button onClick={onClose}><X size={24} className="text-slate-400 hover:text-slate-600"/></button>
+        </div>
+
+        {/* Toolbar */}
+        <div className="flex items-center justify-between mb-4 bg-slate-50 p-3 rounded-lg border border-slate-200">
+           <div className="text-xs font-mono text-slate-600 truncate max-w-xs">{statusMsg || "Ready to scan."}</div>
+           <button onClick={scanBillDocs} disabled={isScanning} className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-bold transition-colors">
+             {isScanning ? <Loader size={14} className="animate-spin"/> : <RefreshCw size={14}/>}
+             {isScanning ? "Scanning..." : "Scan Web"}
+           </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-1">
+          {documents.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-40 text-slate-400 border-2 border-dashed border-slate-200 rounded-lg">
+               <File size={32} className="mb-2 opacity-50"/>
+               <p className="text-sm">No documents tracked.</p>
+               <p className="text-xs">Click 'Scan Web' to find files.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {documents.map((doc, idx) => (
+                <div key={idx} className="bg-white p-3 rounded border border-slate-200 flex justify-between items-center hover:border-blue-300 transition-all shadow-sm">
+                  <div className="flex items-center gap-3 overflow-hidden">
+                    <div className={`p-2 rounded ${doc.imported ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
+                      {doc.imported ? <HardDrive size={16}/> : <Globe size={16}/>}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <span className="truncate">{doc.title}</span>
+                        {doc.isNew && <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 rounded-full font-bold shrink-0">NEW</span>}
+                      </div>
+                      <div className="text-xs text-slate-500 flex gap-2 items-center">
+                         <span className="bg-slate-100 px-1 rounded">{doc.type}</span>
+                         <span className="truncate max-w-[200px] text-slate-400">{doc.url}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                     {/* Import Button */}
+                     {!doc.imported && (
+                       <button 
+                         onClick={() => importDocContent(idx)} 
+                         disabled={importingId !== null}
+                         className="p-1.5 text-blue-600 hover:bg-blue-50 rounded border border-blue-100" 
+                         title="Import to Database"
+                       >
+                         {importingId === doc.id ? <Loader size={16} className="animate-spin"/> : <Download size={16}/>}
+                       </button>
+                     )}
+                     
+                     {/* Analyze Button */}
+                     <button onClick={() => alert("Analysis feature coming soon for: " + doc.title)} className="p-1.5 text-purple-600 hover:bg-purple-50 rounded border border-transparent hover:border-purple-100" title="Analyze with AI"><Sparkles size={16}/></button>
+                     
+                     {/* View Button */}
+                     <a href={doc.url} target="_blank" rel="noreferrer" className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded" title="Open External Link"><ExternalLink size={16}/></a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end pt-4 border-t border-slate-100">
+           <button onClick={saveAndClose} className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-sm shadow-sm">Save & Close</button>
         </div>
       </div>
     </div>
@@ -308,7 +541,8 @@ const AddEditBillModal = ({ onClose, onSave, onDelete, initialBill }) => {
     role: 'Primary Sponsor',
     sponsor: 'Rep. Penner',
     year: '2026',
-    priority: 'Medium'
+    priority: 'Medium',
+    documents: []
   });
 
   const isEdit = !!initialBill;
@@ -420,12 +654,12 @@ export default function App() {
   // Bill Management State
   const [showBillModal, setShowBillModal] = useState(false);
   const [editingBill, setEditingBill] = useState(null);
-  
-  // UNIFIED VIEWING STATE: Handles both string (citation) and object (document)
-  const [viewingDocument, setViewingDocument] = useState(null); 
+  const [viewingCitation, setViewingCitation] = useState(null);
+  const [managingDocsBill, setManagingDocsBill] = useState(null); // For Doc Manager Modal
 
   const [aiPrompt, setAiPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  
   const [chatHistory, setChatHistory] = useState([
     { role: 'model', text: "**System Online.** Welcome back, Rep. Penner. I am ready to assist with legislative analysis or political strategy." }
   ]);
@@ -479,8 +713,19 @@ export default function App() {
     const newBills = editingBill 
       ? bills.map(b => b.id === billData.id ? billData : b)
       : [billData, ...bills];
-    setBills(newBills);
-    localStorage.setItem('vantage_bills', JSON.stringify(newBills));
+    
+    // If updating from Doc Manager, we might not have editingBill set, so ensure update
+    const billIndex = bills.findIndex(b => b.id === billData.id);
+    let updatedStateBills;
+    if (billIndex >= 0) {
+        updatedStateBills = [...bills];
+        updatedStateBills[billIndex] = billData;
+    } else {
+        updatedStateBills = [billData, ...bills];
+    }
+
+    setBills(updatedStateBills);
+    localStorage.setItem('vantage_bills', JSON.stringify(updatedStateBills));
     setEditingBill(null);
 
     if (!user || !db) return;
@@ -525,34 +770,25 @@ export default function App() {
 
   // --- DOCUMENT IMPORT LOGIC ---
   const fetchBillText = async (bill) => {
-    // Construct valid URL based on bill ID structure
     const number = bill.id.replace(/[^0-9]/g, '');
     const prefix = bill.id.replace(/[0-9\s]/g, '').toUpperCase();
     const chamber = prefix.startsWith('S') ? 'Senate%20Bills' : 'House%20Bills';
-    
-    // Construct the URL to the raw HTML text of the bill
     const targetUrl = `https://lawfilesext.leg.wa.gov/biennium/2025-26/Htm/Bills/${chamber}/${number}.htm`;
-    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
 
     try {
-      const response = await fetch(proxyUrl);
-      const data = await response.json();
-      
-      if (!data.contents) throw new Error("Document not found or empty.");
+      const content = await fetchProxyContent(targetUrl);
+      if (!content) throw new Error("Document not found or empty.");
 
-      // Basic HTML stripping to get readable text
+      // Basic HTML stripping
       const parser = new DOMParser();
-      const doc = parser.parseFromString(data.contents, 'text/html');
+      const doc = parser.parseFromString(content, 'text/html');
       const rawText = doc.body.innerText;
 
       if (rawText.length < 50) throw new Error("Document content too short.");
 
-      // Save the text to the bill object
       const updatedBill = { ...bill, text: rawText, lastFetched: new Date().toLocaleDateString() };
       handleSaveBill(updatedBill);
-      
-      // Auto-open viewer
-      setViewingDocument({ title: bill.title, content: rawText });
+      setViewingCitation({ title: bill.title, content: rawText });
       
     } catch (err) {
       alert(`Could not import document for ${bill.id}. It may not be published yet.\n\nTarget: ${targetUrl}`);
@@ -779,11 +1015,11 @@ export default function App() {
                       <td className="px-6 py-4 text-slate-500">{bill.year}</td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex justify-end gap-2 opacity-60 group-hover:opacity-100 transition-opacity">
-                          {/* Fetch Button */}
+                          {/* Scan Docs Button */}
                           <button 
-                             onClick={() => fetchBillText(bill)} 
-                             className={`p-1.5 rounded hover:bg-slate-200 ${bill.text ? 'text-green-600' : 'text-slate-600'}`}
-                             title={bill.text ? "Update Document" : "Fetch Document"}
+                             onClick={() => setManagingDocsBill(bill)} 
+                             className={`p-1.5 rounded hover:bg-slate-200 ${bill.documents && bill.documents.length > 0 ? 'text-green-600' : 'text-slate-600'}`}
+                             title="Scan for Documents"
                           >
                              <FileDown size={16}/>
                           </button>
@@ -791,7 +1027,7 @@ export default function App() {
                           {/* View Button (Only if text exists) */}
                           {bill.text && (
                              <button 
-                                onClick={() => setViewingDocument({ title: bill.title, content: bill.text })} 
+                                onClick={() => setViewingCitation({ title: bill.title, content: bill.text })} 
                                 className="p-1.5 rounded hover:bg-slate-200 text-blue-600"
                                 title="View Document"
                              >
@@ -967,9 +1203,10 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
-      {viewingDocument && <DocumentViewer docData={viewingDocument} onClose={() => setViewingDocument(null)} />}
+      {viewingCitation && <DocumentViewer citation={viewingCitation} onClose={() => setViewingCitation(null)} />}
       {warRoomItem && <WarRoomModal item={warRoomItem} onClose={() => setWarRoomItem(null)} />}
       {showBillModal && <AddEditBillModal onClose={() => { setShowBillModal(false); setEditingBill(null); }} onSave={handleSaveBill} onDelete={handleDeleteBill} initialBill={editingBill} />}
+      {managingDocsBill && <BillDocumentsModal bill={managingDocsBill} onClose={() => setManagingDocsBill(null)} onSave={handleSaveBill} />}
 
       <aside className="w-20 md:w-64 bg-slate-900 text-slate-300 flex flex-col shadow-xl z-20 flex-shrink-0 transition-all duration-300">
         <div className="p-4 md:p-6 border-b border-slate-800 flex items-center gap-3">
@@ -1019,7 +1256,7 @@ export default function App() {
              {chatHistory.map((msg, i) => (
                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                  <div className={`max-w-[85%] p-3 rounded-2xl shadow-sm text-sm ${msg.role === 'user' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-white text-slate-800 border border-slate-200 rounded-bl-none'}`}>
-                   {msg.role === 'model' ? <SimpleMarkdown text={msg.text} onCitationClick={(txt) => setViewingDocument(txt)} /> : msg.text}
+                   {msg.role === 'model' ? <SimpleMarkdown text={msg.text} onCitationClick={(txt) => setViewingCitation(txt)} /> : msg.text}
                  </div>
                </div>
              ))}
