@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch } from 'firebase/firestore';
 import { 
   LayoutDashboard, 
   FileText, 
@@ -53,9 +56,16 @@ import {
 
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
 
-// Note: To use environment variables, ensure your build target supports ES2020 or later.
-// For this deployment, we default to an empty string to ensure compatibility.
-const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+// Safe environment variable access for Gemini
+let apiKey = "";
+try {
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env) {
+    apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+  }
+} catch (e) {
+  console.warn("Environment variables not supported in this build target.");
+}
 
 const callGemini = async (prompt, systemContext = "general", retries = 3) => {
   if (!apiKey) return null;
@@ -90,57 +100,71 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
   }
 };
 
-/* --- 2. DATA MANAGEMENT --- */
+/* --- 2. FIREBASE CONFIGURATION --- */
+// Logic: Use injected config (Preview) OR Environment Variables (Vercel Production)
+let firebaseConfig = {};
 
-// Configuration Lists for Dropdowns
+try {
+  if (typeof __firebase_config !== 'undefined') {
+    // We are in the preview environment
+    firebaseConfig = JSON.parse(__firebase_config);
+  } else if (typeof import.meta !== 'undefined' && import.meta.env) {
+    // We are in Vite/Vercel production
+    // Ensure you have set these variables in Vercel!
+    firebaseConfig = {
+      apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+      projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+      storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+      messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+      appId: import.meta.env.VITE_FIREBASE_APP_ID,
+      measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID // Optional: For Analytics
+    };
+  }
+} catch (e) {
+  console.warn("Error loading Firebase config", e);
+}
+
+// Fallback App ID for when we aren't in the preview environment
+const rawAppId = typeof __app_id !== 'undefined' ? __app_id : 'vantage-os-production';
+// FIX: Ensure appId is safe for Firestore paths (no slashes)
+const appId = rawAppId.replace(/\//g, '_');
+
+// Initialize Firebase only if config is present
+let app, auth, db;
+try {
+  if (firebaseConfig && firebaseConfig.apiKey) {
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+  }
+} catch(e) {
+  console.error("Firebase Initialization Failed:", e);
+}
+
+
+/* --- 3. DATA MANAGEMENT --- */
+
+// Configuration Lists
 const BILL_STATUSES = [
-  "In Committee",
-  "Exec Session",
-  "Rules Committee",
-  "Floor Calendar",
-  "Passed House",
-  "In Senate",
-  "Senate Committee",
-  "Senate Rules",
-  "Senate Floor",
-  "Passed Legislature",
-  "Delivered to Governor",
-  "Signed into Law",
-  "Vetoed",
-  "Dead"
+  "In Committee", "Exec Session", "Rules Committee", "Floor Calendar", "Passed House",
+  "In Senate", "Senate Committee", "Senate Rules", "Senate Floor",
+  "Passed Legislature", "Delivered to Governor", "Signed into Law", "Vetoed", "Dead"
 ];
 
-// UPDATED: Full House Committee List
 const WA_COMMITTEES = [
-  "Agriculture & Natural Resources",
-  "Appropriations",
-  "Capital Budget",
-  "Civil Rights & Judiciary",
-  "Community Safety",
-  "Consumer Protection & Business",
-  "Early Learning & Human Services",
-  "Education",
-  "Environment & Energy",
-  "Finance",
-  "Health Care & Wellness",
-  "Housing",
-  "Labor & Workplace Standards",
-  "Local Government",
-  "Postsecondary Education & Workforce",
-  "Rules",
-  "State Government & Tribal Relations",
-  "Technology, Economic Development, & Veterans",
-  "Transportation"
+  "Agriculture & Natural Resources", "Appropriations", "Capital Budget", "Civil Rights & Judiciary",
+  "Community Safety", "Consumer Protection & Business", "Early Learning & Human Services", "Education",
+  "Environment & Energy", "Finance", "Health Care & Wellness", "Housing", "Labor & Workplace Standards",
+  "Local Government", "Postsecondary Education & Workforce", "Regulated Substances & Gaming", "Rules",
+  "State Government & Tribal Relations", "Technology, Economic Development, & Veterans", "Transportation"
 ];
 
-// Initial Data loaded from source provided with Primary Sponsor
+// Initial Data for Seeding
 const INITIAL_BILLS = [
-  // Primary
   { id: "HB 2202", title: "Dental care pilot at Rainier School", status: "Prefiled", committee: "Human Services", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "High", year: "2026" },
   { id: "HB 1564", title: "Child care B&O tax credit", status: "In Committee", committee: "Finance", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "High", year: "2025" },
   { id: "HB 1818", title: "Modernizing subdivision/platting laws", status: "Floor Calendar", committee: "Local Government", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "Medium", year: "2025" },
-  
-  // Secondary (Co-Sponsor)
   { id: "HB 1051", title: "IEP team meetings/recording", status: "In Committee", committee: "Education", role: "Co-Sponsor", sponsor: "Rep. Walsh", priority: "Low", year: "2025" },
   { id: "HB 1055", title: "Transparency ombuds study", status: "In Committee", committee: "Appropriations", role: "Co-Sponsor", sponsor: "Rep. Abbarno", priority: "Medium", year: "2025" },
   { id: "HB 1086", title: "Motor vehicle chop shops", status: "In Committee", committee: "Community Safety", role: "Co-Sponsor", sponsor: "Rep. Low", priority: "Low", year: "2025" },
@@ -148,8 +172,6 @@ const INITIAL_BILLS = [
   { id: "HB 1324", title: "Transportation funding/CCA", status: "In Committee", committee: "Transportation", role: "Co-Sponsor", sponsor: "Rep. Barkis", priority: "High", year: "2025" },
   { id: "HB 1585", title: "Voter citizenship verif.", status: "In Committee", committee: "State Government & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Marshall", priority: "High", year: "2025" },
   { id: "HB 2058", title: "Private entity audits", status: "In Committee", committee: "State Government & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Couture", priority: "High", year: "2025" },
-  
-  // Passed / Vetoed
   { id: "HB 1106", title: "Disabled veterans/prop. tax", status: "Signed into Law", committee: "Finance", role: "Co-Sponsor", sponsor: "Rep. Barnard", priority: "High", year: "2025" },
   { id: "HB 1414", title: "CTE careers work group", status: "Signed into Law", committee: "Education", role: "Co-Sponsor", sponsor: "Rep. Connors", priority: "Low", year: "2025" },
 ];
@@ -171,10 +193,10 @@ const FEED_CONFIG = [
   { url: "https://www.spokesman.com/feeds/stories/", name: "Spokesman Main", category: "Media" }
 ];
 
-/* --- 3. SHARED COMPONENTS --- */
+/* --- 4. SHARED COMPONENTS --- */
 
 const SimpleMarkdown = ({ text, onCitationClick }) => {
-  if (!text) return null;
+  if (!text || typeof text !== 'string') return null;
   const parseInline = (text) => {
     const parts = text.split(/(\*\*.*?\*\*|\[.*?\])/g);
     return parts.map((part, i) => {
@@ -277,7 +299,7 @@ const WarRoomModal = ({ item, onClose }) => {
   );
 };
 
-const AddEditBillModal = ({ onClose, onSave, initialBill }) => {
+const AddEditBillModal = ({ onClose, onSave, onDelete, initialBill }) => {
   const [billData, setBillData] = useState(initialBill || { 
     id: '', 
     title: '', 
@@ -351,7 +373,19 @@ const AddEditBillModal = ({ onClose, onSave, initialBill }) => {
 
         <div className="flex justify-between items-center pt-4 border-t border-slate-100">
           <div>
-             {isEdit && <button className="text-red-500 text-xs font-bold hover:underline flex items-center gap-1"><Trash2 size={12}/> Delete Bill</button>}
+             {isEdit && (
+               <button 
+                 onClick={() => {
+                   if(window.confirm('Are you sure you want to delete this bill?')) {
+                     onDelete(billData.id);
+                     onClose();
+                   }
+                 }} 
+                 className="text-red-500 text-xs font-bold hover:underline flex items-center gap-1"
+               >
+                 <Trash2 size={12}/> Delete Bill
+               </button>
+             )}
           </div>
           <div className="flex gap-2">
             <button onClick={onClose} className="px-4 py-2 text-slate-500 font-bold hover:bg-slate-100 rounded text-sm">Cancel</button>
@@ -363,16 +397,17 @@ const AddEditBillModal = ({ onClose, onSave, initialBill }) => {
   );
 };
 
-/* --- 4. MAIN APPLICATION --- */
+/* --- 5. MAIN APPLICATION --- */
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [intelItems, setIntelItems] = useState([]);
-  const [bills, setBills] = useState(INITIAL_BILLS);
+  const [bills, setBills] = useState([]); // Bills state managed by Firestore
   const [isScanning, setIsScanning] = useState(false);
   const [scanLog, setScanLog] = useState([]); 
   const [showAIPanel, setShowAIPanel] = useState(false);
   const [warRoomItem, setWarRoomItem] = useState(null);
+  const [user, setUser] = useState(null); // Firebase User
   
   // Bill Management State
   const [showBillModal, setShowBillModal] = useState(false);
@@ -387,7 +422,102 @@ export default function App() {
   const chatEndRef = useRef(null);
   const [scanLogExpanded, setScanLogExpanded] = useState(false);
 
-  // RSS Logic
+  // --- FIREBASE AUTH & DATA SYNC ---
+  
+  // 1. Authenticate on load
+  useEffect(() => {
+    if(!auth) return;
+    const initAuth = async () => {
+      // Check for custom token from environment
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        try {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } catch (error) {
+          console.warn("Custom token sign-in failed, falling back to anonymous", error);
+          await signInAnonymously(auth);
+        }
+      } else {
+        await signInAnonymously(auth);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Sync Bills from Firestore (Private collection for this user)
+  useEffect(() => {
+    if (!user || !db) return;
+    
+    // Using a PRIVATE path so data is isolated per user
+    const billsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
+    
+    const unsubscribe = onSnapshot(billsRef, (snapshot) => {
+      const loadedBills = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        // Ensure ID is included in the object if not already
+        id: doc.id
+      }));
+      setBills(loadedBills);
+    }, (error) => {
+      console.error("Error syncing bills:", error);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // --- ACTIONS ---
+
+  // Save (Add or Update) Bill to Firestore
+  const handleSaveBill = async (billData) => {
+    if (!user || !db) return;
+    try {
+      // Use the Bill Number (e.g., "HB 1234") as the document ID for uniqueness
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', billData.id);
+      await setDoc(docRef, billData);
+    } catch (e) {
+      console.error("Error saving bill:", e);
+      alert("Failed to save bill. Check console for details.");
+    }
+    setEditingBill(null);
+  };
+
+  // Delete Bill from Firestore
+  const handleDeleteBill = async (billId) => {
+    if (!user || !db) return;
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', billId);
+      await deleteDoc(docRef);
+    } catch (e) {
+      console.error("Error deleting bill:", e);
+      alert("Failed to delete bill.");
+    }
+  };
+
+  // Reset Data (Seed Firestore with Defaults)
+  const handleResetData = async () => {
+    if (!user || !db) return;
+    if(!window.confirm("This will overwrite your current cloud database with the default bill list. Are you sure?")) return;
+    
+    try {
+      const batch = writeBatch(db);
+      
+      INITIAL_BILLS.forEach(bill => {
+         // Seed to PRIVATE collection
+         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id);
+         batch.set(docRef, bill);
+      });
+      
+      await batch.commit();
+      alert("Database reset to defaults.");
+    } catch (e) {
+      console.error("Error resetting data:", e);
+      alert("Failed to reset data.");
+    }
+  };
+
+
+  // --- RSS FETCHING LOGIC ---
   const fetchFeeds = async () => {
     setIsScanning(true);
     setScanLog(prev => ["Starting live scan...", ...prev]);
@@ -453,17 +583,6 @@ export default function App() {
   const quickAction = (action, item) => {
     setShowAIPanel(true);
     setAiPrompt(`${action}: "${item}"`);
-  };
-
-  const handleSaveBill = (billData) => {
-    if (editingBill) {
-      // Update existing
-      setBills(prev => prev.map(b => b.id === billData.id ? billData : b));
-    } else {
-      // Add new
-      setBills(prev => [billData, ...prev]);
-    }
-    setEditingBill(null);
   };
 
   const DashboardHome = () => (
@@ -767,6 +886,17 @@ export default function App() {
              <div><div className="font-bold text-slate-900">Rep. Josh Penner</div><div className="text-sm text-slate-500">31st Legislative District</div></div>
           </div>
         </div>
+        
+        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+          <h3 className="text-lg font-bold text-slate-800 mb-4 border-b border-slate-100 pb-2">Data Management</h3>
+          <div className="flex items-center justify-between">
+             <div>
+                <div className="text-sm font-semibold text-slate-800">Cloud Database</div>
+                <div className="text-xs text-slate-500">Reset or Seed initial data to cloud</div>
+             </div>
+             <button onClick={handleResetData} className="text-red-600 text-xs font-bold border border-red-200 px-3 py-1.5 rounded hover:bg-red-50">Reset / Seed Data</button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -775,7 +905,7 @@ export default function App() {
     <div className="flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
       {viewingCitation && <DocumentViewer citation={viewingCitation} onClose={() => setViewingCitation(null)} />}
       {warRoomItem && <WarRoomModal item={warRoomItem} onClose={() => setWarRoomItem(null)} />}
-      {showBillModal && <AddEditBillModal onClose={() => { setShowBillModal(false); setEditingBill(null); }} onSave={handleSaveBill} initialBill={editingBill} />}
+      {showBillModal && <AddEditBillModal onClose={() => { setShowBillModal(false); setEditingBill(null); }} onSave={handleSaveBill} onDelete={handleDeleteBill} initialBill={editingBill} />}
 
       <aside className="w-20 md:w-64 bg-slate-900 text-slate-300 flex flex-col shadow-xl z-20 flex-shrink-0 transition-all duration-300">
         <div className="p-4 md:p-6 border-b border-slate-800 flex items-center gap-3">
