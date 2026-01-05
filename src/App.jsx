@@ -51,7 +51,9 @@ import {
   ChevronUp,
   ListFilter,
   Edit2,
-  Trash2
+  Trash2,
+  Eye,
+  FileDown
 } from 'lucide-react';
 
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
@@ -198,7 +200,7 @@ const SimpleMarkdown = ({ text, onCitationClick }) => {
     });
   };
   return (
-    <div className="space-y-2 text-sm">
+    <div className="space-y-2 text-sm whitespace-pre-wrap">
       {text.split('\n').map((line, idx) => {
         const trimmed = line.trim();
         if (!trimmed) return <div key={idx} className="h-2" />; 
@@ -210,33 +212,40 @@ const SimpleMarkdown = ({ text, onCitationClick }) => {
   );
 };
 
-const DocumentViewer = ({ citation, onClose }) => {
-  if (!citation) return null;
+// Updated Document Viewer to handle real content and simulated strings
+const DocumentViewer = ({ docData, onClose }) => {
+  if (!docData) return null;
+  
+  // Normalize input: if string, treat as title/citation. If object, use properties.
+  const title = typeof docData === 'string' ? docData : docData.title;
+  const content = typeof docData === 'string' ? null : docData.content;
+  
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl h-[80vh] flex flex-col border border-slate-200">
         <div className="h-14 bg-slate-800 text-white px-4 flex justify-between items-center shrink-0 rounded-t-xl">
           <div className="flex items-center gap-3">
              <div className="p-1.5 bg-white/10 rounded"><FileText size={18} /></div>
-             <h3 className="font-semibold text-sm">{citation}</h3>
+             <div className="flex flex-col">
+               <h3 className="font-semibold text-sm line-clamp-1">{title}</h3>
+               <span className="text-[10px] text-slate-400">Imported from Legislative Server</span>
+             </div>
           </div>
           <button onClick={onClose} className="hover:bg-red-500/80 p-2 rounded-full transition-colors"><X size={20} /></button>
         </div>
         <div className="flex-1 bg-slate-100 overflow-y-auto p-8 flex justify-center">
-           <div className="bg-white shadow-lg w-full max-w-2xl min-h-[800px] p-12 relative">
+           <div className="bg-white shadow-lg w-full max-w-3xl min-h-[800px] p-12 relative border border-slate-200">
              <div className="border-b-2 border-slate-800 pb-4 mb-6 text-center">
-               <div className="uppercase tracking-widest text-slate-500 text-xs font-bold mb-2">Official Record</div>
-               <h1 className="text-xl font-serif font-bold text-slate-900">{citation.split(',')[0]}</h1>
+               <div className="uppercase tracking-widest text-slate-500 text-xs font-bold mb-2">Washington State Legislature</div>
+               <h1 className="text-xl font-serif font-bold text-slate-900">{title}</h1>
+               <div className="text-sm text-slate-500 mt-1">Official Text</div>
              </div>
-             <div className="space-y-4 font-serif text-slate-800">
-               <p>This is a simulated view of the requested document.</p>
-               <div className="p-4 bg-yellow-50 border-l-4 border-yellow-400 text-sm">
-                 <strong className="block text-yellow-900 mb-1">AI Relevance Highlight</strong>
-                 The system has identified this section as relevant to your current query.
-               </div>
-               <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.</p>
-               <p>Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.</p>
-               {[1,2,3].map(i => <div key={i} className="h-3 bg-slate-100 rounded w-full" />)}
+             <div className="space-y-4 font-serif text-slate-800 text-sm leading-relaxed whitespace-pre-line">
+               {content ? content : (
+                 <div className="text-center py-20 text-slate-400">
+                    <p className="italic">No text content available.</p>
+                 </div>
+               )}
              </div>
            </div>
         </div>
@@ -411,10 +420,12 @@ export default function App() {
   // Bill Management State
   const [showBillModal, setShowBillModal] = useState(false);
   const [editingBill, setEditingBill] = useState(null);
+  
+  // UNIFIED VIEWING STATE: Handles both string (citation) and object (document)
+  const [viewingDocument, setViewingDocument] = useState(null); 
 
   const [aiPrompt, setAiPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [viewingCitation, setViewingCitation] = useState(null);
   const [chatHistory, setChatHistory] = useState([
     { role: 'model', text: "**System Online.** Welcome back, Rep. Penner. I am ready to assist with legislative analysis or political strategy." }
   ]);
@@ -423,11 +434,9 @@ export default function App() {
 
   // --- FIREBASE AUTH & DATA SYNC ---
   
-  // 1. Authenticate on load
   useEffect(() => {
     if(!auth) return;
     const initAuth = async () => {
-      // Check for custom token from environment
       if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
         try {
           await signInWithCustomToken(auth, __initial_auth_token);
@@ -444,50 +453,36 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // 2. Sync Bills from Firestore (Private collection for this user)
   useEffect(() => {
     if (!user || !db) return;
-    
-    // Using a PRIVATE path so data is isolated per user
     const billsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
-    
     const unsubscribe = onSnapshot(billsRef, (snapshot) => {
       if (snapshot.empty) {
-        // If empty, stick with local or initial
         if(bills.length === 0) setBills(INITIAL_BILLS); 
         return;
       }
-
       const loadedBills = snapshot.docs.map(doc => ({
         ...doc.data(),
-        // Ensure ID is included in the object if not already
         id: doc.id
       }));
       setBills(loadedBills);
-      // Sync down to local storage
       localStorage.setItem('vantage_bills', JSON.stringify(loadedBills));
     }, (error) => {
       console.warn("Using Local Storage due to sync error:", error);
-      // Fallback: Do nothing, let local storage persist
     });
-
     return () => unsubscribe();
   }, [user]);
 
   // --- ACTIONS ---
 
-  // Save (Add or Update) Bill to Firestore + Local
   const handleSaveBill = async (billData) => {
-    // 1. Immediate Local Update (Optimistic UI)
     const newBills = editingBill 
       ? bills.map(b => b.id === billData.id ? billData : b)
       : [billData, ...bills];
-    
     setBills(newBills);
     localStorage.setItem('vantage_bills', JSON.stringify(newBills));
     setEditingBill(null);
 
-    // 2. Async Cloud Update
     if (!user || !db) return;
     try {
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', billData.id);
@@ -497,14 +492,10 @@ export default function App() {
     }
   };
 
-  // Delete Bill from Firestore + Local
   const handleDeleteBill = async (billId) => {
-    // 1. Immediate Local Update
     const newBills = bills.filter(b => b.id !== billId);
     setBills(newBills);
     localStorage.setItem('vantage_bills', JSON.stringify(newBills));
-
-    // 2. Async Cloud Update
     if (!user || !db) return;
     try {
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', billId);
@@ -514,15 +505,10 @@ export default function App() {
     }
   };
 
-  // Reset Data (Seed Firestore with Defaults)
   const handleResetData = async () => {
     if(!window.confirm("This will overwrite your data with default bills. Are you sure?")) return;
-    
-    // Local Reset
     setBills(INITIAL_BILLS);
     localStorage.setItem('vantage_bills', JSON.stringify(INITIAL_BILLS));
-
-    // Cloud Reset
     if (user && db) {
       try {
         const batch = writeBatch(db);
@@ -534,6 +520,43 @@ export default function App() {
       } catch (e) {
         console.error("Cloud reset failed", e);
       }
+    }
+  };
+
+  // --- DOCUMENT IMPORT LOGIC ---
+  const fetchBillText = async (bill) => {
+    // Construct valid URL based on bill ID structure
+    const number = bill.id.replace(/[^0-9]/g, '');
+    const prefix = bill.id.replace(/[0-9\s]/g, '').toUpperCase();
+    const chamber = prefix.startsWith('S') ? 'Senate%20Bills' : 'House%20Bills';
+    
+    // Construct the URL to the raw HTML text of the bill
+    const targetUrl = `https://lawfilesext.leg.wa.gov/biennium/2025-26/Htm/Bills/${chamber}/${number}.htm`;
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
+
+    try {
+      const response = await fetch(proxyUrl);
+      const data = await response.json();
+      
+      if (!data.contents) throw new Error("Document not found or empty.");
+
+      // Basic HTML stripping to get readable text
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(data.contents, 'text/html');
+      const rawText = doc.body.innerText;
+
+      if (rawText.length < 50) throw new Error("Document content too short.");
+
+      // Save the text to the bill object
+      const updatedBill = { ...bill, text: rawText, lastFetched: new Date().toLocaleDateString() };
+      handleSaveBill(updatedBill);
+      
+      // Auto-open viewer
+      setViewingDocument({ title: bill.title, content: rawText });
+      
+    } catch (err) {
+      alert(`Could not import document for ${bill.id}. It may not be published yet.\n\nTarget: ${targetUrl}`);
+      console.error(err);
     }
   };
 
@@ -602,28 +625,6 @@ export default function App() {
   };
 
   const quickAction = (action, item) => {
-    // If it's an analysis request for a bill, try to be smarter
-    if (action.includes("Analyze") && item.startsWith("HB")) {
-       const bill = bills.find(b => b.id === item);
-       if (bill) {
-          const detailedPrompt = `I need a legislative analysis of ${bill.id}: "${bill.title}". 
-          
-          Context:
-          - Role: ${bill.role}
-          - Committee: ${bill.committee}
-          - Status: ${bill.status}
-          
-          Please identify:
-          1. The likely political intent.
-          2. Potential fiscal impacts to watch for.
-          3. Key stakeholders who might oppose this.`;
-          
-          setShowAIPanel(true);
-          setAiPrompt(detailedPrompt); // Pre-fill the prompt bar but don't auto-send so user can edit
-          return;
-       }
-    }
-
     setShowAIPanel(true);
     setAiPrompt(`${action}: "${item}"`);
   };
@@ -778,6 +779,26 @@ export default function App() {
                       <td className="px-6 py-4 text-slate-500">{bill.year}</td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex justify-end gap-2 opacity-60 group-hover:opacity-100 transition-opacity">
+                          {/* Fetch Button */}
+                          <button 
+                             onClick={() => fetchBillText(bill)} 
+                             className={`p-1.5 rounded hover:bg-slate-200 ${bill.text ? 'text-green-600' : 'text-slate-600'}`}
+                             title={bill.text ? "Update Document" : "Fetch Document"}
+                          >
+                             <FileDown size={16}/>
+                          </button>
+                          
+                          {/* View Button (Only if text exists) */}
+                          {bill.text && (
+                             <button 
+                                onClick={() => setViewingDocument({ title: bill.title, content: bill.text })} 
+                                className="p-1.5 rounded hover:bg-slate-200 text-blue-600"
+                                title="View Document"
+                             >
+                                <Eye size={16}/>
+                             </button>
+                          )}
+
                           <button onClick={() => { setEditingBill(bill); setShowBillModal(true); }} className="p-1.5 hover:bg-slate-200 text-slate-600 rounded" title="Edit Bill"><Edit2 size={16}/></button>
                           <button onClick={() => quickAction("Draft email to constituent re", bill.id)} className="p-1.5 hover:bg-blue-100 text-blue-600 rounded" title="Email"><Mail size={16}/></button>
                           <button onClick={() => quickAction("Analyze fiscal impact of", bill.id)} className="p-1.5 hover:bg-purple-100 text-purple-600 rounded" title="AI Analysis"><Sparkles size={16}/></button>
@@ -946,7 +967,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
-      {viewingCitation && <DocumentViewer citation={viewingCitation} onClose={() => setViewingCitation(null)} />}
+      {viewingDocument && <DocumentViewer docData={viewingDocument} onClose={() => setViewingDocument(null)} />}
       {warRoomItem && <WarRoomModal item={warRoomItem} onClose={() => setWarRoomItem(null)} />}
       {showBillModal && <AddEditBillModal onClose={() => { setShowBillModal(false); setEditingBill(null); }} onSave={handleSaveBill} onDelete={handleDeleteBill} initialBill={editingBill} />}
 
@@ -998,7 +1019,7 @@ export default function App() {
              {chatHistory.map((msg, i) => (
                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                  <div className={`max-w-[85%] p-3 rounded-2xl shadow-sm text-sm ${msg.role === 'user' ? 'bg-blue-600 text-white rounded-br-none' : 'bg-white text-slate-800 border border-slate-200 rounded-bl-none'}`}>
-                   {msg.role === 'model' ? <SimpleMarkdown text={msg.text} onCitationClick={setViewingCitation} /> : msg.text}
+                   {msg.role === 'model' ? <SimpleMarkdown text={msg.text} onCitationClick={(txt) => setViewingDocument(txt)} /> : msg.text}
                  </div>
                </div>
              ))}
