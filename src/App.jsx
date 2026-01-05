@@ -47,8 +47,7 @@ import {
 
 // Note: To use environment variables, ensure your build target supports ES2020 or later.
 // For this deployment, we default to an empty string to ensure compatibility and prevent build warnings.
-// const apiKey = import.meta.env.VITE_GEMINI_API_KEY || ""; 
-const apiKey = "";
+const apiKey = ""; 
 
 // Robust Gemini Call combining retry logic from VANTAGE with Context from TRACKER
 const callGemini = async (prompt, systemContext = "general", retries = 3) => {
@@ -204,31 +203,18 @@ const WarRoomModal = ({ item, onClose }) => {
   );
 };
 
-/* --- 3. MOCK DATA GENERATORS --- */
+/* --- 3. DATA MANAGEMENT --- */
 
-const generateIntel = () => {
-  const topics = ["Capital Gains Tax", "Hwy 167 Funding", "Rent Control", "Carbon Auction", "Ferry System"];
-  const sources = ["The Stranger", "Seattle Times", "Publicola", "Shift WA", "House Dems"];
-  const urls = {
-    "The Stranger": "https://www.thestranger.com",
-    "Seattle Times": "https://www.seattletimes.com",
-    "Publicola": "https://publicola.com",
-    "Shift WA": "https://shiftwa.org",
-    "House Dems": "https://housedemocrats.wa.gov"
-  };
-  const source = sources[Math.floor(Math.random() * sources.length)];
-  const t = topics[Math.floor(Math.random() * topics.length)];
-  
-  return {
-    id: Math.random().toString(36).substr(2, 9),
-    title: `${t} ${['Debated', 'Stalled', 'Advanced', 'Criticized'].sort(() => 0.5 - Math.random())[0]} in Committee`,
-    source: source,
-    url: urls[source], // Add URL property
-    summary: `Reports indicate significant movement regarding ${t}. Implications for the upcoming session remain volatile.`,
-    score: Math.floor(Math.random() * 5) + 5,
-    date: 'Today, 9:42 AM'
-  };
-};
+// Configuration: Real Feeds
+const FEED_CONFIG = [
+  { url: "https://housedemocrats.wa.gov/feed/", name: "House Dems", category: "Official" },
+  { url: "https://senatedemocrats.wa.gov/feed/", name: "Senate Dems", category: "Official" },
+  { url: "https://houserepublicans.wa.gov/feed/", name: "House GOP", category: "Official" },
+  { url: "https://src.wastateleg.org/feed/", name: "Senate GOP", category: "Official" },
+  { url: "https://www.thestranger.com/feed", name: "The Stranger", category: "Partisan" },
+  { url: "https://www.seattletimes.com/opinion/feed/", name: "Seattle Times Op", category: "Media" },
+  { url: "https://www.spokesman.com/feeds/stories/", name: "Spokesman Main", category: "Media" }
+];
 
 const upcomingSchedule = [
   { day: "Mon", date: "Jan 12", time: "1:30 PM", event: "Republican Caucus Meeting", type: "Caucus", location: "Caucus Room" },
@@ -264,21 +250,70 @@ export default function App() {
   ]);
   const chatEndRef = useRef(null);
 
+  // --- RSS FETCHING LOGIC ---
+  const fetchFeeds = async () => {
+    setIsScanning(true);
+    let allItems = [];
+
+    const fetchPromises = FEED_CONFIG.map(async (feed) => {
+      try {
+        // Use allorigins.win as a CORS proxy to fetch RSS XML
+        const response = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(feed.url)}`);
+        const data = await response.json();
+        
+        if (!data.contents) throw new Error("No content");
+
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(data.contents, "text/xml");
+        const items = xmlDoc.querySelectorAll("item");
+        
+        // Convert XML items to our app's format (limit 3 per feed)
+        const parsedItems = Array.from(items).slice(0, 3).map(item => {
+          const title = item.querySelector("title")?.textContent || "Untitled";
+          const link = item.querySelector("link")?.textContent || "#";
+          const desc = item.querySelector("description")?.textContent?.replace(/<[^>]*>?/gm, '').slice(0, 150) + "..." || "No summary available.";
+          const pubDate = item.querySelector("pubDate")?.textContent ? new Date(item.querySelector("pubDate")?.textContent).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : "Recent";
+
+          return {
+            id: Math.random().toString(36).substr(2, 9),
+            title: title,
+            source: feed.name,
+            url: link,
+            summary: desc,
+            score: Math.floor(Math.random() * 5) + 3, // Mock score for now
+            date: pubDate
+          };
+        });
+        return parsedItems;
+      } catch (err) {
+        console.warn(`Failed to fetch ${feed.name}:`, err);
+        // Fallback mock if fetch fails
+        return [{
+          id: Math.random().toString(36).substr(2, 9),
+          title: `Update from ${feed.name} (Simulated)`,
+          source: feed.name,
+          url: feed.url,
+          summary: "Connection to live feed interrupted. Displaying placeholder data.",
+          score: 5,
+          date: "Today"
+        }];
+      }
+    });
+
+    const results = await Promise.all(fetchPromises);
+    allItems = results.flat().sort((a, b) => 0.5 - Math.random()); // Shuffle for feed feel
+    
+    setIntelItems(allItems);
+    setIsScanning(false);
+  };
+
   useEffect(() => {
-    setIntelItems(Array.from({ length: 4 }).map(generateIntel));
+    fetchFeeds();
   }, []);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistory, showAIPanel]);
-
-  const handleScan = () => {
-    setIsScanning(true);
-    setTimeout(() => {
-      setIntelItems(prev => [generateIntel(), ...prev]);
-      setIsScanning(false);
-    }, 1500);
-  };
 
   const handleAIChat = async (e) => {
     e.preventDefault();
@@ -359,30 +394,37 @@ export default function App() {
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
           <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
             <h3 className="font-bold text-slate-800 flex items-center gap-2"><Globe size={18} className="text-slate-400"/> Vantage Feed</h3>
-            <button onClick={handleScan} disabled={isScanning} className="text-slate-400 hover:text-blue-600"><RefreshCw size={14} className={isScanning ? "animate-spin" : ""}/></button>
+            <button onClick={fetchFeeds} disabled={isScanning} className="text-slate-400 hover:text-blue-600"><RefreshCw size={14} className={isScanning ? "animate-spin" : ""}/></button>
           </div>
           <div className="flex-1 overflow-y-auto max-h-[400px] p-2 space-y-2">
-            {intelItems.slice(0, 3).map((item) => (
-              <div key={item.id} className="p-3 rounded border border-slate-100 hover:border-blue-200 hover:bg-slate-50 transition-all cursor-pointer group" onClick={() => setWarRoomItem(item)}>
-                <div className="flex justify-between items-start mb-1">
-                  <span className="text-[10px] font-bold uppercase text-slate-500">{item.source}</span>
-                  {item.score > 7 && <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100 flex items-center gap-1"><ShieldAlert size={10}/> PRIORITY</span>}
-                </div>
-                {/* Clickable Title in Mini Feed */}
-                <a 
-                  href={item.url} 
-                  target="_blank" 
-                  rel="noreferrer" 
-                  onClick={(e) => e.stopPropagation()} 
-                  className="text-sm font-medium text-slate-900 leading-snug group-hover:text-blue-700 hover:underline flex items-center gap-1"
-                >
-                  {item.title} <ExternalLink size={10} className="opacity-50"/>
-                </a>
-                <div className="mt-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button className="text-[10px] bg-slate-900 text-white px-2 py-1 rounded font-bold flex items-center gap-1"><PenTool size={10}/> WAR ROOM</button>
-                </div>
+            {isScanning ? (
+              <div className="p-8 text-center text-slate-400 flex flex-col items-center gap-2">
+                <Loader size={24} className="animate-spin text-blue-500"/>
+                <span className="text-xs">Scanning {FEED_CONFIG.length} sources...</span>
               </div>
-            ))}
+            ) : (
+              intelItems.slice(0, 10).map((item) => (
+                <div key={item.id} className="p-3 rounded border border-slate-100 hover:border-blue-200 hover:bg-slate-50 transition-all cursor-pointer group" onClick={() => setWarRoomItem(item)}>
+                  <div className="flex justify-between items-start mb-1">
+                    <span className="text-[10px] font-bold uppercase text-slate-500">{item.source}</span>
+                    {item.score > 7 && <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100 flex items-center gap-1"><ShieldAlert size={10}/> PRIORITY</span>}
+                  </div>
+                  {/* Clickable Title in Mini Feed */}
+                  <a 
+                    href={item.url} 
+                    target="_blank" 
+                    rel="noreferrer" 
+                    onClick={(e) => e.stopPropagation()} 
+                    className="text-sm font-medium text-slate-900 leading-snug group-hover:text-blue-700 hover:underline flex items-center gap-1"
+                  >
+                    {item.title} <ExternalLink size={10} className="opacity-50"/>
+                  </a>
+                  <div className="mt-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button className="text-[10px] bg-slate-900 text-white px-2 py-1 rounded font-bold flex items-center gap-1"><PenTool size={10}/> WAR ROOM</button>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
           <div className="p-2 border-t border-slate-100 text-center">
              <button onClick={() => setActiveTab('intelligence')} className="text-xs font-bold text-blue-600 hover:text-blue-700">VIEW ALL INTEL</button>
@@ -435,35 +477,42 @@ export default function App() {
       <div className="flex justify-between items-center mb-6">
         <div><h2 className="text-2xl font-bold text-slate-900">Vantage Intelligence</h2><p className="text-slate-500 text-sm">Media monitoring and strategic response</p></div>
         <div className="flex gap-2">
-           <button onClick={handleScan} className="bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2"><RefreshCw size={16} className={isScanning ? "animate-spin" : ""}/> Scan</button>
+           <button onClick={fetchFeeds} className="bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2"><RefreshCw size={16} className={isScanning ? "animate-spin" : ""}/> Scan</button>
            <button onClick={() => quickAction("Draft daily briefing based on", "current intel feed")} className="bg-slate-900 text-white px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2"><FileText size={16}/> Briefing</button>
         </div>
       </div>
       <div className="grid grid-cols-1 gap-4">
-        {intelItems.map((item) => (
-          <div key={item.id} className={`bg-white p-5 rounded-xl border shadow-sm transition-all hover:shadow-md flex flex-col md:flex-row gap-4 ${item.score > 7 ? 'border-l-4 border-l-red-500 border-y-slate-200 border-r-slate-200' : 'border-slate-200'}`}>
-             <div className="flex-1">
-               <div className="flex items-center gap-3 mb-2">
-                 <span className="text-[10px] font-bold uppercase bg-slate-100 px-2 py-1 rounded text-slate-600">{item.source}</span>
-                 <span className="text-[10px] text-slate-400">{item.date}</span>
-                 {item.score > 7 && <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100 flex items-center gap-1"><ShieldAlert size={10}/> PRIORITY</span>}
+        {isScanning ? (
+           <div className="p-12 text-center text-slate-400">
+             <Loader size={32} className="animate-spin mx-auto mb-4 text-blue-500"/>
+             <p>Scanning intelligence sources...</p>
+           </div>
+        ) : (
+          intelItems.map((item) => (
+            <div key={item.id} className={`bg-white p-5 rounded-xl border shadow-sm transition-all hover:shadow-md flex flex-col md:flex-row gap-4 ${item.score > 7 ? 'border-l-4 border-l-red-500 border-y-slate-200 border-r-slate-200' : 'border-slate-200'}`}>
+               <div className="flex-1">
+                 <div className="flex items-center gap-3 mb-2">
+                   <span className="text-[10px] font-bold uppercase bg-slate-100 px-2 py-1 rounded text-slate-600">{item.source}</span>
+                   <span className="text-[10px] text-slate-400">{item.date}</span>
+                   {item.score > 7 && <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100 flex items-center gap-1"><ShieldAlert size={10}/> PRIORITY</span>}
+                 </div>
+                 
+                 {/* Clickable Title */}
+                 <h3 className="text-lg font-bold text-slate-900 mb-2">
+                   <a href={item.url} target="_blank" rel="noreferrer" className="hover:underline hover:text-blue-700 flex items-center gap-2">
+                      {item.title} <ExternalLink size={16} className="text-slate-400"/>
+                   </a>
+                 </h3>
+                 
+                 <p className="text-sm text-slate-600">{item.summary}</p>
                </div>
-               
-               {/* Clickable Title */}
-               <h3 className="text-lg font-bold text-slate-900 mb-2">
-                 <a href={item.url} target="_blank" rel="noreferrer" className="hover:underline hover:text-blue-700 flex items-center gap-2">
-                    {item.title} <ExternalLink size={16} className="text-slate-400"/>
-                 </a>
-               </h3>
-               
-               <p className="text-sm text-slate-600">{item.summary}</p>
-             </div>
-             <div className="flex flex-row md:flex-col gap-2 justify-center md:border-l border-slate-100 md:pl-4 min-w-[140px]">
-                <button onClick={() => setWarRoomItem(item)} className="flex-1 bg-slate-900 text-white text-xs font-bold py-2 px-3 rounded flex items-center justify-center gap-2 hover:bg-slate-800"><PenTool size={14}/> WAR ROOM</button>
-                <button onClick={() => quickAction("Analyze sentiment of", item.title)} className="flex-1 bg-white border border-slate-300 text-slate-600 text-xs font-bold py-2 px-3 rounded flex items-center justify-center gap-2 hover:bg-slate-50"><Sparkles size={14}/> ANALYZE</button>
-             </div>
-          </div>
-        ))}
+               <div className="flex flex-row md:flex-col gap-2 justify-center md:border-l border-slate-100 md:pl-4 min-w-[140px]">
+                  <button onClick={() => setWarRoomItem(item)} className="flex-1 bg-slate-900 text-white text-xs font-bold py-2 px-3 rounded flex items-center justify-center gap-2 hover:bg-slate-800"><PenTool size={14}/> WAR ROOM</button>
+                  <button onClick={() => quickAction("Analyze sentiment of", item.title)} className="flex-1 bg-white border border-slate-300 text-slate-600 text-xs font-bold py-2 px-3 rounded flex items-center justify-center gap-2 hover:bg-slate-50"><Sparkles size={14}/> ANALYZE</button>
+               </div>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
