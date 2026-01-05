@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch, getDocs } from 'firebase/firestore';
 import { 
   LayoutDashboard, 
   FileText, 
@@ -60,7 +60,8 @@ import {
   CheckSquare,
   Square,
   MessageSquare,
-  FileType
+  FileType,
+  Save
 } from 'lucide-react';
 
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
@@ -82,7 +83,7 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
   const systemPrompts = {
     general: "You are Vantage, a highly capable legislative Chief of Staff for Rep. Josh Penner. Your tone is professional, strategic, and concise.",
     political: "You are a political strategist. Focus on public perception, polling impact, and media narrative. Be persuasive and sharp.",
-    policy: "You are a legislative analyst. Focus on statutory interpretation, fiscal impact, and legal nuance. Be objective and thorough. NOTE: You cannot access external websites directly. Use the provided context or ask the user for specific text.",
+    policy: "You are a legislative analyst. Focus on statutory interpretation, fiscal impact, and legal nuance. Be objective and thorough. NOTE: If provided with document text, analyze it deeply. If provided with only a title/link for a PDF, outline exactly what the user should look for in that specific document type.",
     writer: "You are a communications director. Write engaging, clear, and voice-specific content for the Representative."
   };
 
@@ -129,37 +130,12 @@ const fetchProxyContent = async (targetUrl) => {
   try {
     return await tryAllOrigins();
   } catch (e1) {
-    console.warn("Primary proxy failed, trying backup...", e1);
     try {
       return await tryCorsProxy();
     } catch (e2) {
-      console.error("Backup proxy failed", e2);
       throw new Error("Unable to fetch content. External site may be blocking access.");
     }
   }
-};
-
-// Utility to force download a file to the user's machine
-const downloadFileToDisk = async (url, filename) => {
-    try {
-        // Use corsproxy to get the raw blob data
-        const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
-        if(!response.ok) throw new Error("Download fetch failed");
-        
-        const blob = await response.blob();
-        const link = document.createElement('a');
-        link.href = window.URL.createObjectURL(blob);
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        return true;
-    } catch (e) {
-        console.error("Auto-download failed:", e);
-        // Fallback: Open in new tab so user can save manually
-        window.open(url, '_blank');
-        return false;
-    }
 };
 
 /* --- 2. FIREBASE CONFIGURATION --- */
@@ -288,7 +264,7 @@ const DocumentViewer = ({ docData, onClose }) => {
              <div className="flex flex-col">
                <h3 className="font-semibold text-sm line-clamp-1">{title}</h3>
                <span className="text-[10px] text-slate-400">
-                 {content ? "Viewing Local Copy" : "External Preview"}
+                 {content && content !== "[PDF Binary Downloaded]" ? "Viewing Database Copy" : "External Preview"}
                </span>
              </div>
           </div>
@@ -307,11 +283,12 @@ const DocumentViewer = ({ docData, onClose }) => {
                <div className="uppercase tracking-widest text-slate-500 text-xs font-bold mb-2">Washington State Legislature</div>
                <h1 className="text-xl font-serif font-bold text-slate-900">{title}</h1>
                {!content && <div className="text-xs text-red-500 mt-1">Live Preview Not Available - Click 'Open External'</div>}
+               {content === "[PDF Binary Downloaded]" && <div className="text-xs text-blue-500 mt-1">PDF Document (Binary) - Click 'Open External' to view</div>}
              </div>
              <div className="space-y-4 font-serif text-slate-800 text-sm leading-relaxed whitespace-pre-line">
-               {content ? content : (
+               {(content && content !== "[PDF Binary Downloaded]") ? content : (
                  <div className="text-center py-20 text-slate-400">
-                    <p className="italic mb-4">Content has not been imported yet.</p>
+                    <p className="italic mb-4">{content === "[PDF Binary Downloaded]" ? "This is a PDF document stored in your library." : "Content has not been imported yet."}</p>
                     {url && <a href={url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline font-sans text-sm font-bold">Open Original Document &rarr;</a>}
                  </div>
                )}
@@ -329,7 +306,6 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
   const [importingId, setImportingId] = useState(null);
   const [documents, setDocuments] = useState(bill.documents || []);
   const [statusMsg, setStatusMsg] = useState('');
-  const [searchTerm, setSearchTerm] = useState('');
 
   const getSessionNumber = (year) => {
     const yr = parseInt(year);
@@ -366,6 +342,7 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
         try {
             const fnContent = await fetchProxyContent(fiscalNoteUrl);
             if(fnContent) {
+                // Find .pdf links in the fiscal note page content
                 const pdfRegex = /href="([^"]+\.pdf)"/gi;
                 let match;
                 let foundFn = false;
@@ -374,18 +351,19 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
                     if (pdfLink.startsWith('/')) {
                         pdfLink = `https://fnspublic.ofm.wa.gov${pdfLink}`;
                     }
-                    addDoc({
-                        id: `fn-${pdfLink.split('/').pop()}`,
-                        title: `Fiscal Note (${year})`,
-                        type: "Fiscal Note",
-                        url: pdfLink,
-                        dateFound: new Date().toLocaleDateString(),
-                        imported: false
-                    });
-                    foundFn = true;
-                }
-                if (!foundFn) {
-                    // Fallback to search page if no direct PDF found
+                    
+                    // Often these links are relative or messy, cleaner checks helps
+                    if(pdfLink.includes("FNSPublicSearch")) {
+                        addDoc({
+                            id: `fn-${pdfLink.split('/').pop()}`,
+                            title: `Fiscal Note (${year})`,
+                            type: "Fiscal Note",
+                            url: pdfLink,
+                            dateFound: new Date().toLocaleDateString(),
+                            imported: false
+                        });
+                        foundFn = true;
+                    }
                 }
             }
         } catch(e) {
@@ -428,15 +406,14 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
     }
   };
 
-  const importDocContent = async (docIndex) => {
+  const importDocContent = async (docIndex, autoSave = false) => {
     const docToImport = documents[docIndex];
-    setImportingId(docToImport.id);
-    setStatusMsg(`Importing ${docToImport.title}...`);
+    if(!autoSave) setImportingId(docToImport.id);
+    if(!autoSave) setStatusMsg(`Importing ${docToImport.title}...`);
     
-    // 1. Download File to User's Machine
-    downloadFileToDisk(docToImport.url, docToImport.title + ".pdf");
+    // NOTE: Removed downloadFileToDisk call as requested. 
+    // Now purely saves to DB.
 
-    // 2. Fetch Content for Database (AI Analysis)
     try {
       const contents = await fetchProxyContent(docToImport.url);
       
@@ -447,13 +424,14 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
         throw new Error("Document too large for database storage.");
       }
 
-      // Basic HTML stripping if it's HTML, otherwise assume text
       let cleanText = "";
+      // Check if it looks like HTML
       if (docToImport.url.endsWith('.htm') || docToImport.url.endsWith('.html') || (typeof contents === 'string' && contents.includes('<html'))) {
            const parser = new DOMParser();
            const dom = parser.parseFromString(contents, 'text/html');
            cleanText = dom.body.innerText;
       } else {
+          // Assume Binary/PDF if not HTML
           cleanText = "[PDF Binary Downloaded]";
       }
 
@@ -465,14 +443,31 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
          importedDate: new Date().toLocaleDateString() 
        };
        setDocuments(updatedDocs);
-       setStatusMsg("Imported & Downloaded.");
-       // Auto-save
-       onSave({ ...bill, documents: updatedDocs });
+       if(!autoSave) setStatusMsg("Saved to Library.");
+       
+       return updatedDocs;
     } catch(e) {
-        setStatusMsg("Download triggered, but DB sync failed.");
+        if(!autoSave) setStatusMsg("Import failed.");
+        return documents;
     } finally {
-        setImportingId(null);
+        if(!autoSave) setImportingId(null);
     }
+  };
+
+  const handleSaveAllNew = async () => {
+    setStatusMsg("Batch saving new documents...");
+    let currentDocs = [...documents];
+    
+    // Iterate and save
+    for(let i=0; i<currentDocs.length; i++) {
+        if(!currentDocs[i].imported) {
+            currentDocs = await importDocContent(i, true);
+        }
+    }
+    
+    setDocuments(currentDocs);
+    setStatusMsg("All documents saved to library.");
+    onSave({ ...bill, documents: currentDocs });
   };
 
   const saveAndClose = () => {
@@ -480,42 +475,35 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
     onClose();
   };
 
-  // Filter documents for display
-  const filteredDocs = documents.filter(d => 
-     d.title.toLowerCase().includes(searchTerm.toLowerCase()) || 
-     d.type.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Auto-scan on open if empty
+  useEffect(() => {
+     if(documents.length === 0 && !isScanning) {
+         scanBillDocs();
+     }
+  }, []);
 
   return (
     <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-white p-6 rounded-xl max-w-3xl w-full shadow-2xl flex flex-col max-h-[85vh]">
         <div className="flex justify-between items-start mb-4">
           <div>
-            <h3 className="text-xl font-bold text-slate-900 flex items-center gap-2"><FolderOpen size={24} className="text-blue-600"/> Bill Resources</h3>
+            <h3 className="text-xl font-bold text-slate-900 flex items-center gap-2"><RefreshCw size={24} className="text-blue-600"/> Scan & Import</h3>
             <p className="text-sm text-slate-500">{bill.id}: {bill.title}</p>
           </div>
           <button onClick={onClose}><X size={24} className="text-slate-400 hover:text-slate-600"/></button>
         </div>
 
         {/* Toolbar */}
-        <div className="flex flex-col gap-2 mb-4 bg-slate-50 p-3 rounded-lg border border-slate-200">
-           <div className="flex items-center justify-between">
-              <div className="text-xs font-mono text-slate-600 truncate max-w-xs">{statusMsg || "Ready to scan."}</div>
-              <button onClick={scanBillDocs} disabled={isScanning} className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-bold transition-colors">
+        <div className="flex items-center justify-between mb-4 bg-slate-50 p-3 rounded-lg border border-slate-200">
+           <div className="text-xs font-mono text-slate-600 truncate max-w-xs">{statusMsg || "Ready to scan."}</div>
+           <div className="flex gap-2">
+             <button onClick={scanBillDocs} disabled={isScanning} className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-bold transition-colors">
                 {isScanning ? <Loader size={14} className="animate-spin"/> : <RefreshCw size={14}/>}
                 {isScanning ? "Scanning..." : "Scan Web"}
-              </button>
-           </div>
-           <div className="flex items-center gap-2 mt-2">
-              <div className="relative flex-1">
-                 <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400"/>
-                 <input 
-                    className="w-full pl-7 pr-2 py-1.5 text-sm border rounded" 
-                    placeholder="Search documents..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                 />
-              </div>
+             </button>
+             <button onClick={handleSaveAllNew} disabled={isScanning || documents.every(d => d.imported)} className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-bold transition-colors disabled:opacity-50">
+                <Save size={14}/> Save All New
+             </button>
            </div>
         </div>
 
@@ -528,7 +516,7 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
             </div>
           ) : (
             <div className="space-y-2">
-              {filteredDocs.map((doc, idx) => (
+              {documents.map((doc, idx) => (
                 <div key={idx} className={`bg-white p-3 rounded border flex justify-between items-center transition-all shadow-sm border-slate-200 hover:border-blue-300`}>
                   <div className="flex items-center gap-3 overflow-hidden">
                     <div className={`p-2 rounded ${doc.imported ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
@@ -552,7 +540,7 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
                          onClick={() => importDocContent(idx)} 
                          disabled={importingId !== null}
                          className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded border border-blue-200" 
-                         title="Import to Database"
+                         title="Save to Library"
                        >
                          {importingId === doc.id ? <Loader size={12} className="animate-spin"/> : <Download size={12}/>}
                          Save to Library
@@ -562,6 +550,9 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
                             <CheckCircle size={12}/> Saved
                         </div>
                      )}
+                     
+                     {/* View Button */}
+                     <a href={doc.url} target="_blank" rel="noreferrer" className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded" title="Open External PDF"><ExternalLink size={16}/></a>
                   </div>
                 </div>
               ))}
@@ -570,7 +561,7 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
         </div>
 
         <div className="flex justify-end pt-4 border-t border-slate-100">
-           <button onClick={saveAndClose} className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-sm shadow-sm">Done</button>
+           <button onClick={saveAndClose} className="px-6 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg font-bold text-sm shadow-sm">Done</button>
         </div>
       </div>
     </div>
@@ -781,6 +772,8 @@ export default function App() {
     const billsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
     const unsubscribe = onSnapshot(billsRef, (snapshot) => {
       if (snapshot.empty) {
+        // If empty, allow persistence of local additions by NOT overwriting with empty
+        // Only seed if bills is truly empty (first load ever)
         if(bills.length === 0) setBills(INITIAL_BILLS); 
         return;
       }
@@ -799,28 +792,49 @@ export default function App() {
   // --- ACTIONS ---
 
   const handleSaveBill = async (billData) => {
-    const newBills = editingBill 
-      ? bills.map(b => b.id === billData.id ? billData : b)
-      : [billData, ...bills];
+    // Determine if we are updating existing or adding new
+    const existingIndex = bills.findIndex(b => b.id === billData.id);
+    let newBills;
     
-    // If updating from Doc Manager, we might not have editingBill set, so ensure update
-    const billIndex = bills.findIndex(b => b.id === billData.id);
-    let updatedStateBills;
-    if (billIndex >= 0) {
-        updatedStateBills = [...bills];
-        updatedStateBills[billIndex] = billData;
+    if (existingIndex >= 0) {
+        // Update existing
+        newBills = [...bills];
+        newBills[existingIndex] = billData;
     } else {
-        updatedStateBills = [billData, ...bills];
+        // Add new
+        newBills = [billData, ...bills];
     }
-
-    setBills(updatedStateBills);
-    localStorage.setItem('vantage_bills', JSON.stringify(updatedStateBills));
+    
+    // 1. Update State & Local
+    setBills(newBills);
+    localStorage.setItem('vantage_bills', JSON.stringify(newBills));
     setEditingBill(null);
 
+    // 2. Update Cloud
     if (!user || !db) return;
+    
     try {
+      // Logic Fix: If cloud was empty but we have local bills (e.g. initial load + new add), 
+      // we should ensure ALL bills get saved, not just the new one, to prevent sync override.
+      // Batch write the whole state if it's small, or just the one. 
+      // For safety, we just save the specific one here. 
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', billData.id);
       await setDoc(docRef, billData);
+      
+      // If this was the first custom add and the DB was empty (falling back to initial), 
+      // we should persist the initial ones too so they don't vanish.
+      if (bills.length === INITIAL_BILLS.length && bills[0].id === INITIAL_BILLS[0].id) {
+          // Rudimentary check for "is using default list"
+          const batch = writeBatch(db);
+          bills.forEach(b => {
+             if(b.id !== billData.id) {
+                 const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', b.id);
+                 batch.set(ref, b);
+             }
+          });
+          await batch.commit();
+      }
+
     } catch (e) {
       console.warn("Saved locally only (Cloud error):", e);
     }
@@ -872,7 +886,7 @@ export default function App() {
          } else {
              prompt += `\n[URL]: ${d.url}`;
              if(d.content === "[PDF Binary Downloaded]") {
-                 prompt += `\n[NOTE]: This document is a PDF stored locally. I cannot read it directly. Please ask the user to paste relevant text from this PDF below.`;
+                 prompt += `\n[NOTE]: This document is a PDF stored in the library. I cannot read its binary content directly. Please ask the user to copy/paste specific sections if you need to analyze the text.`;
              }
          }
      });
@@ -1378,10 +1392,10 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
-      {viewingCitation && <DocumentViewer citation={viewingCitation} onClose={() => setViewingCitation(null)} />}
+      {viewingCitation && <DocumentViewer docData={viewingCitation} onClose={() => setViewingCitation(null)} />}
       {warRoomItem && <WarRoomModal item={warRoomItem} onClose={() => setWarRoomItem(null)} />}
       {showBillModal && <AddEditBillModal onClose={() => { setShowBillModal(false); setEditingBill(null); }} onSave={handleSaveBill} onDelete={handleDeleteBill} initialBill={editingBill} />}
-      {managingDocsBill && <BillDocumentsModal bill={managingDocsBill} onClose={() => setManagingDocsBill(null)} onSave={handleSaveBill} onAnalyzeSelected={handleAnalyzeSelectedDocs} />}
+      {managingDocsBill && <BillDocumentsModal bill={managingDocsBill} onClose={() => setManagingDocsBill(null)} onSave={handleSaveBill} />}
 
       <aside className="w-20 md:w-64 bg-slate-900 text-slate-300 flex flex-col shadow-xl z-20 flex-shrink-0 transition-all duration-300">
         <div className="p-4 md:p-6 border-b border-slate-800 flex items-center gap-3">
