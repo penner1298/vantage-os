@@ -55,7 +55,7 @@ import {
 
 // Note: To use environment variables, ensure your build target supports ES2020 or later.
 // For this deployment, we default to an empty string to ensure compatibility.
-const apiKey = ""; 
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 
 const callGemini = async (prompt, systemContext = "general", retries = 3) => {
   if (!apiKey) return null;
