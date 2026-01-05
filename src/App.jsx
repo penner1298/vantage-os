@@ -45,11 +45,16 @@ import {
   Maximize2,
   Minimize2,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  ListFilter,
+  Edit2,
+  Trash2
 } from 'lucide-react';
 
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
 
+// Note: To use environment variables, ensure your build target supports ES2020 or later.
+// For this deployment, we default to an empty string to ensure compatibility and prevent build warnings.
 const apiKey = ""; 
 
 const callGemini = async (prompt, systemContext = "general", retries = 3) => {
@@ -87,18 +92,66 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
 
 /* --- 2. DATA MANAGEMENT --- */
 
-// Real 2025-2026 Sponsored Bills for Rep. Penner
-const MY_BILLS = [
-  { id: "HB 2202", title: "Dental care pilot at Rainier School", status: "Prefiled", committee: "Human Services", role: "Primary Sponsor", priority: "High", year: "2026" },
-  { id: "HB 1564", title: "Child care B&O tax credit", status: "In Committee", committee: "Finance", role: "Primary Sponsor", priority: "High", year: "2025" },
-  { id: "HB 1818", title: "Modernizing subdivision/platting laws", status: "Floor Calendar", committee: "Local Govt", role: "Primary Sponsor", priority: "Medium", year: "2025" },
-  { id: "HB 2049", title: "Funding K-12 education & safety", status: "Passed", committee: "Appropriations", role: "Co-Sponsor", priority: "Medium", year: "2025" },
-  { id: "HB 1414", title: "Career opportunities for students", status: "Passed", committee: "Education", role: "Co-Sponsor", priority: "Low", year: "2025" },
-  { id: "HB 2166", title: "Recognizing major religious holidays", status: "Prefiled", committee: "State Govt", role: "Co-Sponsor", priority: "Low", year: "2026" },
-  { id: "HB 1106", title: "Disabled veterans property tax relief", status: "Passed", committee: "Finance", role: "Co-Sponsor", priority: "High", year: "2025" }
+// Configuration Lists for Dropdowns
+const BILL_STATUSES = [
+  "In Committee",
+  "Exec Session",
+  "Rules Committee",
+  "Floor Calendar",
+  "Passed House",
+  "In Senate",
+  "Senate Committee",
+  "Senate Rules",
+  "Senate Floor",
+  "Passed Legislature",
+  "Delivered to Governor",
+  "Signed into Law",
+  "Vetoed",
+  "Dead"
 ];
 
-// Real Committee Assignments
+const WA_COMMITTEES = [
+  "Appropriations",
+  "Capital Budget",
+  "Civil Rights & Judiciary",
+  "Community Safety",
+  "Consumer Protection & Business",
+  "Education",
+  "Environment & Energy",
+  "Finance",
+  "Health Care & Wellness",
+  "Housing",
+  "Human Services",
+  "Innovation, Community & Econ Dev",
+  "Labor & Workplace Standards",
+  "Local Government",
+  "Regulated Substances & Gaming",
+  "State Govt & Tribal Relations",
+  "Transportation",
+  "Rules"
+];
+
+// Initial Data loaded from source provided with Primary Sponsor
+const INITIAL_BILLS = [
+  // Primary
+  { id: "HB 2202", title: "Dental care pilot at Rainier School", status: "Prefiled", committee: "Human Services", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "High", year: "2026" },
+  { id: "HB 1564", title: "Child care B&O tax credit", status: "In Committee", committee: "Finance", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "High", year: "2025" },
+  { id: "HB 1818", title: "Modernizing subdivision/platting laws", status: "Floor Calendar", committee: "Local Government", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "Medium", year: "2025" },
+  
+  // Secondary (Co-Sponsor)
+  { id: "HB 1051", title: "IEP team meetings/recording", status: "In Committee", committee: "Education", role: "Co-Sponsor", sponsor: "Rep. Walsh", priority: "Low", year: "2025" },
+  { id: "HB 1055", title: "Transparency ombuds study", status: "In Committee", committee: "Appropriations", role: "Co-Sponsor", sponsor: "Rep. Abbarno", priority: "Medium", year: "2025" },
+  { id: "HB 1086", title: "Motor vehicle chop shops", status: "In Committee", committee: "Community Safety", role: "Co-Sponsor", sponsor: "Rep. Low", priority: "Low", year: "2025" },
+  { id: "HB 1221", title: "Gubernatorial proclamations", status: "In Committee", committee: "State Govt & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Volz", priority: "Medium", year: "2025" },
+  { id: "HB 1324", title: "Transportation funding/CCA", status: "In Committee", committee: "Transportation", role: "Co-Sponsor", sponsor: "Rep. Barkis", priority: "High", year: "2025" },
+  { id: "HB 1585", title: "Voter citizenship verif.", status: "In Committee", committee: "State Govt & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Marshall", priority: "High", year: "2025" },
+  { id: "HB 2058", title: "Private entity audits", status: "In Committee", committee: "State Govt & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Couture", priority: "High", year: "2025" },
+  
+  // Passed / Vetoed
+  { id: "HB 1106", title: "Disabled veterans/prop. tax", status: "Signed into Law", committee: "Finance", role: "Co-Sponsor", sponsor: "Rep. Barnard", priority: "High", year: "2025" },
+  { id: "HB 1414", title: "CTE careers work group", status: "Signed into Law", committee: "Education", role: "Co-Sponsor", sponsor: "Rep. Connors", priority: "Low", year: "2025" },
+];
+
 const MY_COMMITTEES = {
   APP: { name: "Appropriations", role: "Assistant Ranking Member" },
   FIN: { name: "Finance", role: "Member" },
@@ -111,7 +164,6 @@ const FEED_CONFIG = [
   { url: "https://senatedemocrats.wa.gov/feed/", name: "Senate Dems", category: "Official" },
   { url: "https://houserepublicans.wa.gov/feed/", name: "House GOP", category: "Official" },
   { url: "https://src.wastateleg.org/feed/", name: "Senate GOP", category: "Official" },
-  // Commercial sites often block CORS/bots. We use a proxy, but failures are common.
   { url: "https://www.thestranger.com/feed", name: "The Stranger", category: "Partisan" }, 
   { url: "https://www.seattletimes.com/opinion/feed/", name: "Seattle Times Op", category: "Media" },
   { url: "https://www.spokesman.com/feeds/stories/", name: "Spokesman Main", category: "Media" }
@@ -223,16 +275,107 @@ const WarRoomModal = ({ item, onClose }) => {
   );
 };
 
+const AddEditBillModal = ({ onClose, onSave, initialBill }) => {
+  const [billData, setBillData] = useState(initialBill || { 
+    id: '', 
+    title: '', 
+    status: 'In Committee', 
+    committee: 'Appropriations',
+    role: 'Primary Sponsor',
+    sponsor: 'Rep. Penner',
+    year: '2026',
+    priority: 'Medium'
+  });
+
+  const isEdit = !!initialBill;
+
+  const handleSubmit = () => {
+    if(!billData.id) return;
+    onSave(billData);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-white p-6 rounded-xl max-w-lg w-full shadow-2xl animate-in zoom-in-95 duration-200">
+        <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+          <FileText size={20}/> {isEdit ? 'Edit Bill Details' : 'Track New Bill'}
+        </h3>
+        
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="block text-xs font-bold text-slate-500 mb-1">Bill Number</label>
+            <input className="w-full border p-2 rounded text-sm" placeholder="e.g. HB 2405" value={billData.id} onChange={e => setBillData({...billData, id: e.target.value})} autoFocus={!isEdit}/>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-500 mb-1">Session Year</label>
+            <input className="w-full border p-2 rounded text-sm" placeholder="2026" value={billData.year} onChange={e => setBillData({...billData, year: e.target.value})}/>
+          </div>
+        </div>
+
+        <div className="mb-4">
+          <label className="block text-xs font-bold text-slate-500 mb-1">Title / Topic</label>
+          <input className="w-full border p-2 rounded text-sm" placeholder="Short description of the bill" value={billData.title} onChange={e => setBillData({...billData, title: e.target.value})}/>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="block text-xs font-bold text-slate-500 mb-1">Status / Location</label>
+            <select className="w-full border p-2 rounded bg-white text-sm" value={billData.status} onChange={e => setBillData({...billData, status: e.target.value})}>
+              {BILL_STATUSES.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-500 mb-1">Committee</label>
+            <select className="w-full border p-2 rounded bg-white text-sm" value={billData.committee} onChange={e => setBillData({...billData, committee: e.target.value})}>
+              {WA_COMMITTEES.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4 mb-6">
+          <div>
+            <label className="block text-xs font-bold text-slate-500 mb-1">My Role</label>
+            <select className="w-full border p-2 rounded bg-white text-sm" value={billData.role} onChange={e => setBillData({...billData, role: e.target.value})}>
+              <option>Primary Sponsor</option>
+              <option>Co-Sponsor</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-500 mb-1">Primary Sponsor Name</label>
+            <input className="w-full border p-2 rounded text-sm" placeholder="e.g. Rep. Smith" value={billData.sponsor} onChange={e => setBillData({...billData, sponsor: e.target.value})}/>
+          </div>
+        </div>
+
+        <div className="flex justify-between items-center pt-4 border-t border-slate-100">
+          <div>
+             {isEdit && <button className="text-red-500 text-xs font-bold hover:underline flex items-center gap-1"><Trash2 size={12}/> Delete Bill</button>}
+          </div>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-4 py-2 text-slate-500 font-bold hover:bg-slate-100 rounded text-sm">Cancel</button>
+            <button onClick={handleSubmit} className="px-4 py-2 bg-blue-600 text-white font-bold rounded hover:bg-blue-700 text-sm">Save Changes</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 /* --- 4. MAIN APPLICATION --- */
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [intelItems, setIntelItems] = useState([]);
+  const [bills, setBills] = useState(INITIAL_BILLS);
   const [isScanning, setIsScanning] = useState(false);
   const [scanLog, setScanLog] = useState([]); 
   const [showAIPanel, setShowAIPanel] = useState(false);
   const [warRoomItem, setWarRoomItem] = useState(null);
-  const [draftingBill, setDraftingBill] = useState(false);
+  
+  // Bill Management State
+  const [showBillModal, setShowBillModal] = useState(false);
+  const [editingBill, setEditingBill] = useState(null);
+
   const [aiPrompt, setAiPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [viewingCitation, setViewingCitation] = useState(null);
@@ -251,7 +394,6 @@ export default function App() {
     const fetchPromises = FEED_CONFIG.map(async (feed) => {
       try {
         setScanLog(prev => [`Requesting: ${feed.name}...`, ...prev]);
-        // rss2json is usually more reliable than raw XML proxies for these specific sites
         const response = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}&api_key=`); 
         const data = await response.json();
         
@@ -311,12 +453,23 @@ export default function App() {
     setAiPrompt(`${action}: "${item}"`);
   };
 
+  const handleSaveBill = (billData) => {
+    if (editingBill) {
+      // Update existing
+      setBills(prev => prev.map(b => b.id === billData.id ? billData : b));
+    } else {
+      // Add new
+      setBills(prev => [billData, ...prev]);
+    }
+    setEditingBill(null);
+  };
+
   const DashboardHome = () => (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
           <div className="flex justify-between items-start mb-2"><div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><FileText size={20}/></div><span className="text-xs font-bold text-slate-400">ACTIVE</span></div>
-          <div className="text-3xl font-bold text-slate-900">{MY_BILLS.length}</div>
+          <div className="text-3xl font-bold text-slate-900">{bills.length}</div>
           <div className="text-sm text-slate-500">Sponsored Bills</div>
         </div>
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
@@ -340,18 +493,22 @@ export default function App() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
           <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-            <h3 className="font-bold text-slate-800 flex items-center gap-2"><Calendar size={18} className="text-slate-400"/> Legislative Schedule</h3>
+            <h3 className="font-bold text-slate-800 flex items-center gap-2"><Calendar size={18} className="text-slate-400"/> Committee Schedule</h3>
             <button onClick={() => setActiveTab('committees')} className="text-xs font-bold text-blue-600 hover:underline">VIEW CALENDAR</button>
           </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
-             <div className="p-3 bg-slate-50 rounded border border-slate-100 flex items-center gap-4">
-                <div className="text-center w-12"><div className="text-xs font-bold text-slate-400">MON</div><div className="text-lg font-bold">12</div></div>
-                <div><div className="font-bold text-sm">Appropriations: Work Session</div><div className="text-xs text-slate-500">3:30 PM • JLOB 315</div></div>
-             </div>
-             <div className="p-3 bg-slate-50 rounded border border-slate-100 flex items-center gap-4">
-                <div className="text-center w-12"><div className="text-xs font-bold text-slate-400">TUE</div><div className="text-lg font-bold">13</div></div>
-                <div><div className="font-bold text-sm">Finance: Public Hearing</div><div className="text-xs text-slate-500">8:00 AM • JLOB 317</div></div>
-             </div>
+          <div className="divide-y divide-slate-100">
+            <div className="p-4 flex items-center hover:bg-slate-50">
+               <div className="flex flex-col items-center w-14 mr-4 border-r border-slate-100 pr-4">
+                  <span className="text-xs font-bold text-slate-400 uppercase">MON</span><span className="text-lg font-bold text-slate-800">12</span>
+               </div>
+               <div className="flex-1"><h4 className="text-sm font-semibold text-slate-900">Appropriations: Work Session</h4><div className="text-xs text-slate-500 flex gap-2"><span className="flex items-center gap-1"><Clock size={12}/> 3:30 PM</span><span className="flex items-center gap-1"><MapPin size={12}/> JLOB 315</span></div></div>
+            </div>
+            <div className="p-4 flex items-center hover:bg-slate-50">
+               <div className="flex flex-col items-center w-14 mr-4 border-r border-slate-100 pr-4">
+                  <span className="text-xs font-bold text-slate-400 uppercase">TUE</span><span className="text-lg font-bold text-slate-800">13</span>
+               </div>
+               <div className="flex-1"><h4 className="text-sm font-semibold text-slate-900">Finance: Public Hearing</h4><div className="text-xs text-slate-500 flex gap-2"><span className="flex items-center gap-1"><Clock size={12}/> 8:00 AM</span><span className="flex items-center gap-1"><MapPin size={12}/> JLOB 317</span></div></div>
+            </div>
           </div>
         </div>
 
@@ -382,22 +539,42 @@ export default function App() {
 
   const LegislationView = () => {
     const [filterRole, setFilterRole] = useState('All');
+    const [hidePassed, setHidePassed] = useState(true);
     const [sortKey, setSortKey] = useState('status');
 
-    const filteredBills = MY_BILLS.filter(b => filterRole === 'All' || b.role.includes(filterRole));
+    const filteredBills = bills.filter(b => {
+      const matchesRole = filterRole === 'All' || b.role.includes(filterRole);
+      // Check for "Passed" indicators
+      const isPassed = b.status.includes('Signed') || b.status.includes('Passed') || b.status.includes('Vetoed') || b.status.startsWith('C ');
+      const matchesPassed = hidePassed ? !isPassed : true;
+      return matchesRole && matchesPassed;
+    });
+    
     const sortedBills = [...filteredBills].sort((a, b) => a[sortKey].localeCompare(b[sortKey]));
+
+    const getBillUrl = (billId, year) => {
+        const number = billId.replace(/[^0-9]/g, '');
+        return `https://app.leg.wa.gov/billsummary/?BillNumber=${number}&Year=${year || 2025}&Initiative=false`;
+    };
 
     return (
       <div className="animate-in slide-in-from-right-4 duration-300">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
-          <div><h2 className="text-2xl font-bold text-slate-900">Legislation Tracker</h2><p className="text-slate-500 text-sm">Managing {MY_BILLS.length} sponsored bills</p></div>
-          <div className="flex gap-2">
+          <div><h2 className="text-2xl font-bold text-slate-900">Legislation Tracker</h2><p className="text-slate-500 text-sm">Managing {bills.length} sponsored bills</p></div>
+          <div className="flex flex-wrap items-center gap-3">
+             <div className="flex items-center gap-2 mr-2 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 cursor-pointer" onClick={() => setHidePassed(!hidePassed)}>
+                <div className={`w-4 h-4 rounded border flex items-center justify-center ${hidePassed ? 'bg-blue-600 border-blue-600' : 'bg-white border-slate-400'}`}>
+                   {hidePassed && <CheckCircle size={10} className="text-white"/>}
+                </div>
+                <span className="text-xs font-bold text-slate-600 select-none">Hide Passed</span>
+             </div>
+             
              <div className="flex bg-white rounded-lg border border-slate-300 p-1">
                 {['All', 'Primary', 'Co-Sponsor'].map(role => (
                    <button key={role} onClick={() => setFilterRole(role)} className={`px-3 py-1.5 text-xs font-bold rounded transition-colors ${filterRole === role ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-50'}`}>{role}</button>
                 ))}
              </div>
-             <button onClick={() => setDraftingBill(true)} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 shadow-sm"><Plus size={16}/> New Draft</button>
+             <button onClick={() => { setEditingBill(null); setShowBillModal(true); }} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 shadow-sm"><Plus size={16}/> Add Bill</button>
           </div>
         </div>
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -405,31 +582,46 @@ export default function App() {
             <table className="w-full text-left text-sm min-w-[800px]">
               <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
                 <tr>
-                  {['id', 'title', 'committee', 'status', 'year'].map(head => (
-                     <th key={head} onClick={() => setSortKey(head)} className="px-6 py-4 cursor-pointer hover:text-slate-800 capitalize select-none">{head === 'id' ? 'Bill #' : head} {sortKey === head && <ChevronDown size={12} className="inline"/>}</th>
+                  {['id', 'title', 'sponsor', 'committee', 'status', 'year'].map(head => (
+                     <th key={head} onClick={() => setSortKey(head)} className="px-6 py-4 cursor-pointer hover:text-slate-800 capitalize select-none group transition-colors">
+                        <div className="flex items-center gap-1">
+                          {head === 'id' ? 'Bill #' : head === 'sponsor' ? 'Primary Sponsor' : head} 
+                          {sortKey === head ? <ChevronDown size={14} className="text-blue-500"/> : <ListFilter size={12} className="text-slate-300 opacity-0 group-hover:opacity-100"/>}
+                        </div>
+                     </th>
                   ))}
                   <th className="px-6 py-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {sortedBills.map((bill, idx) => (
-                  <tr key={idx} className="hover:bg-slate-50 transition-colors group">
-                    <td className="px-6 py-4 font-mono font-bold text-blue-600">{bill.id}</td>
-                    <td className="px-6 py-4 font-medium text-slate-900">
-                       {bill.title}
-                       <div className="text-[10px] text-slate-500 mt-1">{bill.role}</div>
-                    </td>
-                    <td className="px-6 py-4 text-slate-600">{bill.committee}</td>
-                    <td className="px-6 py-4"><span className={`px-2 py-1 rounded-full text-xs font-bold ${bill.status === 'Passed' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>{bill.status}</span></td>
-                    <td className="px-6 py-4 text-slate-500">{bill.year}</td>
-                    <td className="px-6 py-4 text-right">
-                      <div className="flex justify-end gap-2 opacity-60 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => quickAction("Draft email to constituent re", bill.id)} className="p-1.5 hover:bg-blue-100 text-blue-600 rounded" title="Email"><Mail size={16}/></button>
-                        <button onClick={() => quickAction("Analyze fiscal impact of", bill.id)} className="p-1.5 hover:bg-purple-100 text-purple-600 rounded" title="AI Analysis"><Sparkles size={16}/></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {sortedBills.length === 0 ? (
+                  <tr><td colSpan="7" className="p-8 text-center text-slate-400 italic">No bills match your current filters.</td></tr>
+                ) : (
+                  sortedBills.map((bill, idx) => (
+                    <tr key={idx} className="hover:bg-slate-50 transition-colors group">
+                      <td className="px-6 py-4 font-mono font-bold text-blue-600">
+                          <a href={getBillUrl(bill.id, bill.year)} target="_blank" rel="noreferrer" className="hover:underline flex items-center gap-1">
+                              {bill.id} <ExternalLink size={10} className="opacity-50"/>
+                          </a>
+                      </td>
+                      <td className="px-6 py-4 font-medium text-slate-900">
+                         {bill.title}
+                         <div className="text-[10px] text-slate-500 mt-1">{bill.role}</div>
+                      </td>
+                      <td className="px-6 py-4 text-slate-600">{bill.sponsor}</td>
+                      <td className="px-6 py-4 text-slate-600">{bill.committee}</td>
+                      <td className="px-6 py-4"><span className={`px-2 py-1 rounded-full text-xs font-bold ${bill.status.includes('Passed') || bill.status.includes('Signed') ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>{bill.status}</span></td>
+                      <td className="px-6 py-4 text-slate-500">{bill.year}</td>
+                      <td className="px-6 py-4 text-right">
+                        <div className="flex justify-end gap-2 opacity-60 group-hover:opacity-100 transition-opacity">
+                          <button onClick={() => { setEditingBill(bill); setShowBillModal(true); }} className="p-1.5 hover:bg-slate-200 text-slate-600 rounded" title="Edit Bill"><Edit2 size={16}/></button>
+                          <button onClick={() => quickAction("Draft email to constituent re", bill.id)} className="p-1.5 hover:bg-blue-100 text-blue-600 rounded" title="Email"><Mail size={16}/></button>
+                          <button onClick={() => quickAction("Analyze fiscal impact of", bill.id)} className="p-1.5 hover:bg-purple-100 text-purple-600 rounded" title="AI Analysis"><Sparkles size={16}/></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -581,18 +773,7 @@ export default function App() {
     <div className="flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
       {viewingCitation && <DocumentViewer citation={viewingCitation} onClose={() => setViewingCitation(null)} />}
       {warRoomItem && <WarRoomModal item={warRoomItem} onClose={() => setWarRoomItem(null)} />}
-      {draftingBill && (
-        <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-           <div className="bg-white p-6 rounded-xl max-w-md w-full shadow-2xl">
-             <h3 className="text-lg font-bold mb-4">Draft New Legislation</h3>
-             <input className="w-full border p-2 rounded mb-4" placeholder="Bill Title/Topic" autoFocus />
-             <div className="flex justify-end gap-2">
-               <button onClick={() => setDraftingBill(false)} className="px-4 py-2 text-slate-500 font-bold hover:bg-slate-100 rounded">Cancel</button>
-               <button onClick={() => { setDraftingBill(false); alert("Draft initialized in Vantage."); }} className="px-4 py-2 bg-blue-600 text-white font-bold rounded hover:bg-blue-700">Create Draft</button>
-             </div>
-           </div>
-        </div>
-      )}
+      {showBillModal && <AddEditBillModal onClose={() => { setShowBillModal(false); setEditingBill(null); }} onSave={handleSaveBill} initialBill={editingBill} />}
 
       <aside className="w-20 md:w-64 bg-slate-900 text-slate-300 flex flex-col shadow-xl z-20 flex-shrink-0 transition-all duration-300">
         <div className="p-4 md:p-6 border-b border-slate-800 flex items-center gap-3">
