@@ -41,7 +41,11 @@ import {
   ToggleLeft, 
   ToggleRight, 
   LogOut,
-  Terminal
+  Terminal,
+  Maximize2,
+  Minimize2,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
@@ -85,13 +89,13 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
 
 // Real 2025-2026 Sponsored Bills for Rep. Penner
 const MY_BILLS = [
-  { id: "HB 2202", title: "Dental care pilot at Rainier School", status: "Prefiled", committee: "Human Services", role: "Primary Sponsor", priority: "High" },
-  { id: "HB 1564", title: "Child care B&O tax credit", status: "In Committee", committee: "Finance", role: "Primary Sponsor", priority: "High" },
-  { id: "HB 1818", title: "Modernizing subdivision/platting laws", status: "Floor Calendar", committee: "Local Govt", role: "Primary Sponsor", priority: "Medium" },
-  { id: "HB 2049", title: "Funding K-12 education & safety", status: "Passed", committee: "Appropriations", role: "Co-Sponsor", priority: "Medium" },
-  { id: "HB 1414", title: "Career opportunities for students", status: "Passed", committee: "Education", role: "Co-Sponsor", priority: "Low" },
-  { id: "HB 2166", title: "Recognizing major religious holidays", status: "Prefiled", committee: "State Govt", role: "Co-Sponsor", priority: "Low" },
-  { id: "HB 1106", title: "Disabled veterans property tax relief", status: "Passed", committee: "Finance", role: "Co-Sponsor", priority: "High" }
+  { id: "HB 2202", title: "Dental care pilot at Rainier School", status: "Prefiled", committee: "Human Services", role: "Primary Sponsor", priority: "High", year: "2026" },
+  { id: "HB 1564", title: "Child care B&O tax credit", status: "In Committee", committee: "Finance", role: "Primary Sponsor", priority: "High", year: "2025" },
+  { id: "HB 1818", title: "Modernizing subdivision/platting laws", status: "Floor Calendar", committee: "Local Govt", role: "Primary Sponsor", priority: "Medium", year: "2025" },
+  { id: "HB 2049", title: "Funding K-12 education & safety", status: "Passed", committee: "Appropriations", role: "Co-Sponsor", priority: "Medium", year: "2025" },
+  { id: "HB 1414", title: "Career opportunities for students", status: "Passed", committee: "Education", role: "Co-Sponsor", priority: "Low", year: "2025" },
+  { id: "HB 2166", title: "Recognizing major religious holidays", status: "Prefiled", committee: "State Govt", role: "Co-Sponsor", priority: "Low", year: "2026" },
+  { id: "HB 1106", title: "Disabled veterans property tax relief", status: "Passed", committee: "Finance", role: "Co-Sponsor", priority: "High", year: "2025" }
 ];
 
 // Real Committee Assignments
@@ -107,7 +111,8 @@ const FEED_CONFIG = [
   { url: "https://senatedemocrats.wa.gov/feed/", name: "Senate Dems", category: "Official" },
   { url: "https://houserepublicans.wa.gov/feed/", name: "House GOP", category: "Official" },
   { url: "https://src.wastateleg.org/feed/", name: "Senate GOP", category: "Official" },
-  { url: "https://www.thestranger.com/feed", name: "The Stranger", category: "Partisan" },
+  // Commercial sites often block CORS/bots. We use a proxy, but failures are common.
+  { url: "https://www.thestranger.com/feed", name: "The Stranger", category: "Partisan" }, 
   { url: "https://www.seattletimes.com/opinion/feed/", name: "Seattle Times Op", category: "Media" },
   { url: "https://www.spokesman.com/feeds/stories/", name: "Spokesman Main", category: "Media" }
 ];
@@ -230,13 +235,14 @@ export default function App() {
   const [draftingBill, setDraftingBill] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [viewingCitation, setViewingCitation] = useState(null); // Fixed: Added state variable
+  const [viewingCitation, setViewingCitation] = useState(null);
   const [chatHistory, setChatHistory] = useState([
     { role: 'model', text: "**System Online.** Welcome back, Rep. Penner. I am ready to assist with legislative analysis or political strategy." }
   ]);
   const chatEndRef = useRef(null);
+  const [scanLogExpanded, setScanLogExpanded] = useState(false);
 
-  // --- IMPROVED RSS FETCHING ---
+  // RSS Logic
   const fetchFeeds = async () => {
     setIsScanning(true);
     setScanLog(prev => ["Starting live scan...", ...prev]);
@@ -245,9 +251,8 @@ export default function App() {
     const fetchPromises = FEED_CONFIG.map(async (feed) => {
       try {
         setScanLog(prev => [`Requesting: ${feed.name}...`, ...prev]);
-        // Switch to rss2json.com for better reliability with frontend requests
+        // rss2json is usually more reliable than raw XML proxies for these specific sites
         const response = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}&api_key=`); 
-        // Note: rss2json has a free tier that works well without a key for limited requests
         const data = await response.json();
         
         if (data.status !== 'ok') throw new Error("Feed parsing failed");
@@ -279,7 +284,6 @@ export default function App() {
   };
 
   useEffect(() => {
-    // Initial fetch on load
     fetchFeeds();
   }, []);
 
@@ -334,24 +338,20 @@ export default function App() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
           <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-            <h3 className="font-bold text-slate-800 flex items-center gap-2"><Calendar size={18} className="text-slate-400"/> Committee Schedule</h3>
+            <h3 className="font-bold text-slate-800 flex items-center gap-2"><Calendar size={18} className="text-slate-400"/> Legislative Schedule</h3>
             <button onClick={() => setActiveTab('committees')} className="text-xs font-bold text-blue-600 hover:underline">VIEW CALENDAR</button>
           </div>
-          <div className="divide-y divide-slate-100">
-            <div className="p-4 flex items-center hover:bg-slate-50">
-               <div className="flex flex-col items-center w-14 mr-4 border-r border-slate-100 pr-4">
-                  <span className="text-xs font-bold text-slate-400 uppercase">MON</span><span className="text-lg font-bold text-slate-800">12</span>
-               </div>
-               <div className="flex-1"><h4 className="text-sm font-semibold text-slate-900">Appropriations: Work Session</h4><div className="text-xs text-slate-500 flex gap-2"><span className="flex items-center gap-1"><Clock size={12}/> 3:30 PM</span><span className="flex items-center gap-1"><MapPin size={12}/> JLOB 315</span></div></div>
-            </div>
-            <div className="p-4 flex items-center hover:bg-slate-50">
-               <div className="flex flex-col items-center w-14 mr-4 border-r border-slate-100 pr-4">
-                  <span className="text-xs font-bold text-slate-400 uppercase">TUE</span><span className="text-lg font-bold text-slate-800">13</span>
-               </div>
-               <div className="flex-1"><h4 className="text-sm font-semibold text-slate-900">Finance: Public Hearing</h4><div className="text-xs text-slate-500 flex gap-2"><span className="flex items-center gap-1"><Clock size={12}/> 8:00 AM</span><span className="flex items-center gap-1"><MapPin size={12}/> JLOB 317</span></div></div>
-            </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+             <div className="p-3 bg-slate-50 rounded border border-slate-100 flex items-center gap-4">
+                <div className="text-center w-12"><div className="text-xs font-bold text-slate-400">MON</div><div className="text-lg font-bold">12</div></div>
+                <div><div className="font-bold text-sm">Appropriations: Work Session</div><div className="text-xs text-slate-500">3:30 PM • JLOB 315</div></div>
+             </div>
+             <div className="p-3 bg-slate-50 rounded border border-slate-100 flex items-center gap-4">
+                <div className="text-center w-12"><div className="text-xs font-bold text-slate-400">TUE</div><div className="text-lg font-bold">13</div></div>
+                <div><div className="font-bold text-sm">Finance: Public Hearing</div><div className="text-xs text-slate-500">8:00 AM • JLOB 317</div></div>
+             </div>
           </div>
         </div>
 
@@ -380,73 +380,100 @@ export default function App() {
     </div>
   );
 
-  const LegislationView = () => (
-    <div className="animate-in slide-in-from-right-4 duration-300">
-      <div className="flex justify-between items-center mb-6">
-        <div><h2 className="text-2xl font-bold text-slate-900">Legislation Tracker</h2><p className="text-slate-500 text-sm">Managing {MY_BILLS.length} sponsored bills</p></div>
-        <button onClick={() => setDraftingBill(true)} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 shadow-sm"><Plus size={16}/> New Draft</button>
+  const LegislationView = () => {
+    const [filterRole, setFilterRole] = useState('All');
+    const [sortKey, setSortKey] = useState('status');
+
+    const filteredBills = MY_BILLS.filter(b => filterRole === 'All' || b.role.includes(filterRole));
+    const sortedBills = [...filteredBills].sort((a, b) => a[sortKey].localeCompare(b[sortKey]));
+
+    return (
+      <div className="animate-in slide-in-from-right-4 duration-300">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+          <div><h2 className="text-2xl font-bold text-slate-900">Legislation Tracker</h2><p className="text-slate-500 text-sm">Managing {MY_BILLS.length} sponsored bills</p></div>
+          <div className="flex gap-2">
+             <div className="flex bg-white rounded-lg border border-slate-300 p-1">
+                {['All', 'Primary', 'Co-Sponsor'].map(role => (
+                   <button key={role} onClick={() => setFilterRole(role)} className={`px-3 py-1.5 text-xs font-bold rounded transition-colors ${filterRole === role ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-50'}`}>{role}</button>
+                ))}
+             </div>
+             <button onClick={() => setDraftingBill(true)} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 shadow-sm"><Plus size={16}/> New Draft</button>
+          </div>
+        </div>
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm min-w-[800px]">
+              <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
+                <tr>
+                  {['id', 'title', 'committee', 'status', 'year'].map(head => (
+                     <th key={head} onClick={() => setSortKey(head)} className="px-6 py-4 cursor-pointer hover:text-slate-800 capitalize select-none">{head === 'id' ? 'Bill #' : head} {sortKey === head && <ChevronDown size={12} className="inline"/>}</th>
+                  ))}
+                  <th className="px-6 py-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {sortedBills.map((bill, idx) => (
+                  <tr key={idx} className="hover:bg-slate-50 transition-colors group">
+                    <td className="px-6 py-4 font-mono font-bold text-blue-600">{bill.id}</td>
+                    <td className="px-6 py-4 font-medium text-slate-900">
+                       {bill.title}
+                       <div className="text-[10px] text-slate-500 mt-1">{bill.role}</div>
+                    </td>
+                    <td className="px-6 py-4 text-slate-600">{bill.committee}</td>
+                    <td className="px-6 py-4"><span className={`px-2 py-1 rounded-full text-xs font-bold ${bill.status === 'Passed' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>{bill.status}</span></td>
+                    <td className="px-6 py-4 text-slate-500">{bill.year}</td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex justify-end gap-2 opacity-60 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => quickAction("Draft email to constituent re", bill.id)} className="p-1.5 hover:bg-blue-100 text-blue-600 rounded" title="Email"><Mail size={16}/></button>
+                        <button onClick={() => quickAction("Analyze fiscal impact of", bill.id)} className="p-1.5 hover:bg-purple-100 text-purple-600 rounded" title="AI Analysis"><Sparkles size={16}/></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
-        <table className="w-full text-left text-sm min-w-[600px]">
-          <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
-            <tr>
-              <th className="px-6 py-4">Bill #</th>
-              <th className="px-6 py-4">Title</th>
-              <th className="px-6 py-4">Committee</th>
-              <th className="px-6 py-4">Status</th>
-              <th className="px-6 py-4 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {MY_BILLS.map((bill, idx) => (
-              <tr key={idx} className="hover:bg-slate-50 transition-colors group">
-                <td className="px-6 py-4 font-mono font-bold text-blue-600">{bill.id}</td>
-                <td className="px-6 py-4 font-medium text-slate-900">{bill.title}</td>
-                <td className="px-6 py-4 text-slate-600">{bill.committee}</td>
-                <td className="px-6 py-4"><span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full text-xs font-bold">{bill.status}</span></td>
-                <td className="px-6 py-4 text-right">
-                  <div className="flex justify-end gap-2 opacity-60 group-hover:opacity-100 transition-opacity">
-                    <button onClick={() => quickAction("Draft email to constituent re", bill.id)} className="p-1.5 hover:bg-blue-100 text-blue-600 rounded" title="Email"><Mail size={16}/></button>
-                    <button onClick={() => quickAction("Analyze fiscal impact of", bill.id)} className="p-1.5 hover:bg-purple-100 text-purple-600 rounded" title="AI Analysis"><Sparkles size={16}/></button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
+    );
+  };
 
   const IntelligenceView = () => (
     <div className="animate-in slide-in-from-right-4 duration-300 flex flex-col h-full">
-      <div className="flex justify-between items-center mb-6 shrink-0">
-        <div><h2 className="text-2xl font-bold text-slate-900">Vantage Intelligence</h2><p className="text-slate-500 text-sm">Real-time media monitoring (Live Feed)</p></div>
+      <div className="flex justify-between items-center mb-4 shrink-0">
+        <div><h2 className="text-2xl font-bold text-slate-900">Vantage Intelligence</h2><p className="text-slate-500 text-sm">Real-time media monitoring</p></div>
         <div className="flex gap-2">
            <button onClick={fetchFeeds} className="bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2"><RefreshCw size={16} className={isScanning ? "animate-spin" : ""}/> Scan</button>
            <button onClick={() => quickAction("Draft daily briefing based on", "current intel feed")} className="bg-slate-900 text-white px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2"><FileText size={16}/> Briefing</button>
         </div>
       </div>
       
-      <div className="bg-slate-900 text-green-400 p-3 rounded-lg mb-4 text-xs font-mono h-32 overflow-y-auto border border-slate-700 shadow-inner">
-        <div className="flex items-center gap-2 mb-2 border-b border-slate-700 pb-1 text-white font-bold"><Terminal size={12}/> SYSTEM LOG</div>
-        {scanLog.map((log, i) => <div key={i} className="opacity-80">{'>'} {log}</div>)}
-        {scanLog.length === 0 && <div className="opacity-50 italic">Ready to scan.</div>}
+      {/* Expandable Debug Log */}
+      <div className={`bg-slate-900 text-green-400 rounded-lg mb-4 text-xs font-mono border border-slate-700 shadow-inner transition-all duration-300 ${scanLogExpanded ? 'h-64' : 'h-12'} overflow-hidden flex flex-col`}>
+        <div className="flex items-center justify-between p-2 border-b border-slate-700 bg-slate-950 cursor-pointer" onClick={() => setScanLogExpanded(!scanLogExpanded)}>
+           <div className="flex items-center gap-2 font-bold text-white"><Terminal size={12}/> SYSTEM LOG</div>
+           {scanLogExpanded ? <Minimize2 size={14} className="text-slate-400"/> : <Maximize2 size={14} className="text-slate-400"/>}
+        </div>
+        <div className="p-2 overflow-y-auto flex-1">
+           {scanLog.map((log, i) => <div key={i} className="opacity-80 mb-1">{'>'} {log}</div>)}
+           {scanLog.length === 0 && <div className="opacity-50 italic">System ready.</div>}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 flex-1 overflow-y-auto">
-        {intelItems.length === 0 ? (
+      <div className="grid grid-cols-1 gap-4 flex-1 overflow-y-auto pb-4">
+        {intelItems.length === 0 && !isScanning ? (
             <div className="text-center py-20 text-slate-400">
                 <Activity size={48} className="mx-auto mb-4 opacity-20"/>
-                <p>No intelligence found. Click "Scan" to fetch live data.</p>
+                <p>No intelligence found. Check system log for feed errors.</p>
             </div>
         ) : (
           intelItems.map((item) => (
-            <div key={item.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm transition-all hover:shadow-md flex flex-col md:flex-row gap-4">
+            <div key={item.id} className={`bg-white p-5 rounded-xl border shadow-sm transition-all hover:shadow-md flex flex-col md:flex-row gap-4 ${item.score > 7 ? 'border-l-4 border-l-red-500 border-y-slate-200 border-r-slate-200' : 'border-slate-200'}`}>
                <div className="flex-1">
                  <div className="flex items-center gap-3 mb-2">
                    <span className="text-[10px] font-bold uppercase bg-slate-100 px-2 py-1 rounded text-slate-600">{item.source}</span>
                    <span className="text-[10px] text-slate-400">{item.date}</span>
+                   {item.score > 7 && <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100 flex items-center gap-1"><ShieldAlert size={10}/> PRIORITY</span>}
                  </div>
                  <h3 className="text-lg font-bold text-slate-900 mb-2">
                    <a href={item.url} target="_blank" rel="noreferrer" className="hover:underline hover:text-blue-700 flex items-center gap-2">{item.title} <ExternalLink size={16} className="text-slate-400"/></a>
