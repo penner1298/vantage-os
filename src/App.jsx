@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch } from 'firebase/firestore';
 import { 
   LayoutDashboard, 
   FileText, 
@@ -83,7 +83,7 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
   const systemPrompts = {
     general: "You are Vantage, a highly capable legislative Chief of Staff for Rep. Josh Penner. Your tone is professional, strategic, and concise.",
     political: "You are a political strategist. Focus on public perception, polling impact, and media narrative. Be persuasive and sharp.",
-    policy: "You are a legislative analyst. Focus on statutory interpretation, fiscal impact, and legal nuance. Be objective and thorough. NOTE: If provided with document text, analyze it deeply. If provided with only a title/link for a PDF, outline exactly what the user should look for in that specific document type.",
+    policy: "You are a legislative analyst. Focus on statutory interpretation, fiscal impact, and legal nuance. Be objective and thorough. NOTE: You cannot access external websites directly. Use the provided context or ask the user for specific text.",
     writer: "You are a communications director. Write engaging, clear, and voice-specific content for the Representative."
   };
 
@@ -301,7 +301,7 @@ const DocumentViewer = ({ docData, onClose }) => {
 };
 
 // New Modal to Manage and Scan Bill Documents
-const BillDocumentsModal = ({ bill, onClose, onSave }) => {
+const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
   const [isScanning, setIsScanning] = useState(false);
   const [importingId, setImportingId] = useState(null);
   const [documents, setDocuments] = useState(bill.documents || []);
@@ -342,17 +342,13 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
         try {
             const fnContent = await fetchProxyContent(fiscalNoteUrl);
             if(fnContent) {
-                // Find .pdf links in the fiscal note page content
                 const pdfRegex = /href="([^"]+\.pdf)"/gi;
                 let match;
-                let foundFn = false;
                 while ((match = pdfRegex.exec(fnContent)) !== null) {
                     let pdfLink = match[1];
                     if (pdfLink.startsWith('/')) {
                         pdfLink = `https://fnspublic.ofm.wa.gov${pdfLink}`;
                     }
-                    
-                    // Often these links are relative or messy, cleaner checks helps
                     if(pdfLink.includes("FNSPublicSearch")) {
                         addDoc({
                             id: `fn-${pdfLink.split('/').pop()}`,
@@ -362,7 +358,6 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
                             dateFound: new Date().toLocaleDateString(),
                             imported: false
                         });
-                        foundFn = true;
                     }
                 }
             }
@@ -370,28 +365,55 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
             console.warn("Fiscal note scan issue", e);
         }
 
-      // 2. Fetch Bill Summary Page
+      // 2. Fetch Bill Summary Page & Scrape properly
       const contents = await fetchProxyContent(billPageUrl);
       if (contents) {
-         const docRegex = /https:\/\/lawfilesext\.leg\.wa\.gov\/[^"']+/g;
-         const foundLinks = contents.match(docRegex) || [];
+         // Create a temporary DOM to parse properly instead of regex
+         const parser = new DOMParser();
+         const doc = parser.parseFromString(contents, 'text/html');
          
-         foundLinks.forEach(link => {
-            let type = "Unknown";
-            if(link.includes("Pdf/Bills")) type = "Original Bill";
-            if(link.includes("Amendments")) type = "Amendment";
-            if(link.includes("Reports")) type = "Bill Report";
-            if(link.includes("Fiscal")) type = "Fiscal Note";
+         // Find all links
+         const links = Array.from(doc.querySelectorAll('a'));
+         
+         links.forEach(a => {
+            const href = a.getAttribute('href');
+            if(!href) return;
+            
+            // Normalize URL
+            let fullUrl = href;
+            if(!href.startsWith('http')) {
+                // Should handle relative urls if any, mostly they are absolute on wa.gov
+                return; 
+            }
+            
+            // Check for lawfilesext
+            if(fullUrl.includes('lawfilesext.leg.wa.gov')) {
+                let type = "Unknown Doc";
+                const text = a.textContent.trim();
+                
+                // Categorize based on text or url structure
+                if(fullUrl.includes("Pdf/Bills")) type = "Original Bill";
+                else if(fullUrl.includes("Amendments")) type = "Amendment";
+                else if(fullUrl.includes("Reports")) type = "Bill Report";
+                else if(fullUrl.includes("Fiscal")) type = "Fiscal Note";
+                
+                // Override with link text if descriptive
+                if(text.includes("Analysis") || text.includes("Report") || text.includes("Fiscal")) {
+                    type = text;
+                }
 
-            const fileName = link.split('/').pop();
-            addDoc({
-               id: fileName, 
-               title: `${type} - ${fileName}`,
-               type: type,
-               url: link,
-               dateFound: new Date().toLocaleDateString(),
-               imported: false
-            });
+                // Clean filename
+                const fileName = fullUrl.split('/').pop();
+                
+                addDoc({
+                    id: fileName,
+                    title: type + " - " + fileName, // fallback
+                    type: type,
+                    url: fullUrl,
+                    dateFound: new Date().toLocaleDateString(),
+                    imported: false
+                });
+            }
          });
       }
 
@@ -411,9 +433,6 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
     if(!autoSave) setImportingId(docToImport.id);
     if(!autoSave) setStatusMsg(`Importing ${docToImport.title}...`);
     
-    // NOTE: Removed downloadFileToDisk call as requested. 
-    // Now purely saves to DB.
-
     try {
       const contents = await fetchProxyContent(docToImport.url);
       
@@ -772,8 +791,6 @@ export default function App() {
     const billsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
     const unsubscribe = onSnapshot(billsRef, (snapshot) => {
       if (snapshot.empty) {
-        // If empty, allow persistence of local additions by NOT overwriting with empty
-        // Only seed if bills is truly empty (first load ever)
         if(bills.length === 0) setBills(INITIAL_BILLS); 
         return;
       }
@@ -792,47 +809,43 @@ export default function App() {
   // --- ACTIONS ---
 
   const handleSaveBill = async (billData) => {
-    // Determine if we are updating existing or adding new
-    const existingIndex = bills.findIndex(b => b.id === billData.id);
-    let newBills;
+    const newBills = editingBill 
+      ? bills.map(b => b.id === billData.id ? billData : b)
+      : [billData, ...bills];
     
-    if (existingIndex >= 0) {
-        // Update existing
-        newBills = [...bills];
-        newBills[existingIndex] = billData;
+    // If updating from Doc Manager, we might not have editingBill set, so ensure update
+    const billIndex = bills.findIndex(b => b.id === billData.id);
+    let updatedStateBills;
+    if (billIndex >= 0) {
+        updatedStateBills = [...bills];
+        updatedStateBills[billIndex] = billData;
     } else {
-        // Add new
-        newBills = [billData, ...bills];
+        updatedStateBills = [billData, ...bills];
     }
-    
-    // 1. Update State & Local
-    setBills(newBills);
-    localStorage.setItem('vantage_bills', JSON.stringify(newBills));
+
+    setBills(updatedStateBills);
+    localStorage.setItem('vantage_bills', JSON.stringify(updatedStateBills));
     setEditingBill(null);
 
-    // 2. Update Cloud
     if (!user || !db) return;
-    
     try {
-      // Logic Fix: If cloud was empty but we have local bills (e.g. initial load + new add), 
-      // we should ensure ALL bills get saved, not just the new one, to prevent sync override.
-      // Batch write the whole state if it's small, or just the one. 
-      // For safety, we just save the specific one here. 
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', billData.id);
       await setDoc(docRef, billData);
       
-      // If this was the first custom add and the DB was empty (falling back to initial), 
-      // we should persist the initial ones too so they don't vanish.
-      if (bills.length === INITIAL_BILLS.length && bills[0].id === INITIAL_BILLS[0].id) {
-          // Rudimentary check for "is using default list"
-          const batch = writeBatch(db);
-          bills.forEach(b => {
+      // If DB was empty/initial, ensure we seed the default bills + the new one
+      // We check if current bill count is small (like 1) or matches default size + 1
+      // A robust check is simply to see if we have unsaved bills in state
+      if (bills.length > 1) { // We have other bills
+         const batch = writeBatch(db);
+         let batchCount = 0;
+         bills.forEach(b => {
              if(b.id !== billData.id) {
                  const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', b.id);
                  batch.set(ref, b);
+                 batchCount++;
              }
-          });
-          await batch.commit();
+         });
+         if(batchCount > 0) await batch.commit();
       }
 
     } catch (e) {
@@ -1392,7 +1405,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
-      {viewingCitation && <DocumentViewer docData={viewingCitation} onClose={() => setViewingCitation(null)} />}
+      {viewingCitation && <DocumentViewer citation={viewingCitation} onClose={() => setViewingCitation(null)} />}
       {warRoomItem && <WarRoomModal item={warRoomItem} onClose={() => setWarRoomItem(null)} />}
       {showBillModal && <AddEditBillModal onClose={() => { setShowBillModal(false); setEditingBill(null); }} onSave={handleSaveBill} onDelete={handleDeleteBill} initialBill={editingBill} />}
       {managingDocsBill && <BillDocumentsModal bill={managingDocsBill} onClose={() => setManagingDocsBill(null)} onSave={handleSaveBill} />}
