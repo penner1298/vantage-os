@@ -73,7 +73,7 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
   const systemPrompts = {
     general: "You are Vantage, a highly capable legislative Chief of Staff for Rep. Josh Penner. Your tone is professional, strategic, and concise.",
     political: "You are a political strategist. Focus on public perception, polling impact, and media narrative. Be persuasive and sharp.",
-    policy: "You are a legislative analyst. Focus on statutory interpretation, fiscal impact, and legal nuance. Be objective and thorough.",
+    policy: "You are a legislative analyst. Focus on statutory interpretation, fiscal impact, and legal nuance. Be objective and thorough. NOTE: You cannot access external websites. Ask the user to paste bill text if a deep analysis is required.",
     writer: "You are a communications director. Write engaging, clear, and voice-specific content for the Representative."
   };
 
@@ -101,16 +101,12 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
 };
 
 /* --- 2. FIREBASE CONFIGURATION --- */
-// Logic: Use injected config (Preview) OR Environment Variables (Vercel Production)
 let firebaseConfig = {};
 
 try {
   if (typeof __firebase_config !== 'undefined') {
-    // We are in the preview environment
     firebaseConfig = JSON.parse(__firebase_config);
   } else if (typeof import.meta !== 'undefined' && import.meta.env) {
-    // We are in Vite/Vercel production
-    // Ensure you have set these variables in Vercel!
     firebaseConfig = {
       apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
       authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -118,19 +114,16 @@ try {
       storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
       messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
       appId: import.meta.env.VITE_FIREBASE_APP_ID,
-      measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID // Optional: For Analytics
+      measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID 
     };
   }
 } catch (e) {
   console.warn("Error loading Firebase config", e);
 }
 
-// Fallback App ID for when we aren't in the preview environment
 const rawAppId = typeof __app_id !== 'undefined' ? __app_id : 'vantage-os-production';
-// FIX: Ensure appId is safe for Firestore paths (no slashes)
 const appId = rawAppId.replace(/\//g, '_');
 
-// Initialize Firebase only if config is present
 let app, auth, db;
 try {
   if (firebaseConfig && firebaseConfig.apiKey) {
@@ -145,7 +138,6 @@ try {
 
 /* --- 3. DATA MANAGEMENT --- */
 
-// Configuration Lists
 const BILL_STATUSES = [
   "In Committee", "Exec Session", "Rules Committee", "Floor Calendar", "Passed House",
   "In Senate", "Senate Committee", "Senate Rules", "Senate Floor",
@@ -160,7 +152,6 @@ const WA_COMMITTEES = [
   "State Government & Tribal Relations", "Technology, Economic Development, & Veterans", "Transportation"
 ];
 
-// Initial Data for Seeding
 const INITIAL_BILLS = [
   { id: "HB 2202", title: "Dental care pilot at Rainier School", status: "Prefiled", committee: "Human Services", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "High", year: "2026" },
   { id: "HB 1564", title: "Child care B&O tax credit", status: "In Committee", committee: "Finance", role: "Primary Sponsor", sponsor: "Rep. Penner", priority: "High", year: "2025" },
@@ -402,7 +393,15 @@ const AddEditBillModal = ({ onClose, onSave, onDelete, initialBill }) => {
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [intelItems, setIntelItems] = useState([]);
-  const [bills, setBills] = useState([]); // Bills state managed by Firestore
+  
+  // DUAL-SAVE SYSTEM: Try to load from LocalStorage first for instant results
+  const [bills, setBills] = useState(() => {
+    try {
+      const local = localStorage.getItem('vantage_bills');
+      return local ? JSON.parse(local) : [];
+    } catch(e) { return [] }
+  });
+
   const [isScanning, setIsScanning] = useState(false);
   const [scanLog, setScanLog] = useState([]); 
   const [showAIPanel, setShowAIPanel] = useState(false);
@@ -453,14 +452,23 @@ export default function App() {
     const billsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
     
     const unsubscribe = onSnapshot(billsRef, (snapshot) => {
+      if (snapshot.empty) {
+        // If empty, stick with local or initial
+        if(bills.length === 0) setBills(INITIAL_BILLS); 
+        return;
+      }
+
       const loadedBills = snapshot.docs.map(doc => ({
         ...doc.data(),
         // Ensure ID is included in the object if not already
         id: doc.id
       }));
       setBills(loadedBills);
+      // Sync down to local storage
+      localStorage.setItem('vantage_bills', JSON.stringify(loadedBills));
     }, (error) => {
-      console.error("Error syncing bills:", error);
+      console.warn("Using Local Storage due to sync error:", error);
+      // Fallback: Do nothing, let local storage persist
     });
 
     return () => unsubscribe();
@@ -468,51 +476,64 @@ export default function App() {
 
   // --- ACTIONS ---
 
-  // Save (Add or Update) Bill to Firestore
+  // Save (Add or Update) Bill to Firestore + Local
   const handleSaveBill = async (billData) => {
+    // 1. Immediate Local Update (Optimistic UI)
+    const newBills = editingBill 
+      ? bills.map(b => b.id === billData.id ? billData : b)
+      : [billData, ...bills];
+    
+    setBills(newBills);
+    localStorage.setItem('vantage_bills', JSON.stringify(newBills));
+    setEditingBill(null);
+
+    // 2. Async Cloud Update
     if (!user || !db) return;
     try {
-      // Use the Bill Number (e.g., "HB 1234") as the document ID for uniqueness
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', billData.id);
       await setDoc(docRef, billData);
     } catch (e) {
-      console.error("Error saving bill:", e);
-      alert("Failed to save bill. Check console for details.");
+      console.warn("Saved locally only (Cloud error):", e);
     }
-    setEditingBill(null);
   };
 
-  // Delete Bill from Firestore
+  // Delete Bill from Firestore + Local
   const handleDeleteBill = async (billId) => {
+    // 1. Immediate Local Update
+    const newBills = bills.filter(b => b.id !== billId);
+    setBills(newBills);
+    localStorage.setItem('vantage_bills', JSON.stringify(newBills));
+
+    // 2. Async Cloud Update
     if (!user || !db) return;
     try {
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', billId);
       await deleteDoc(docRef);
     } catch (e) {
-      console.error("Error deleting bill:", e);
-      alert("Failed to delete bill.");
+      console.warn("Deleted locally only (Cloud error):", e);
     }
   };
 
   // Reset Data (Seed Firestore with Defaults)
   const handleResetData = async () => {
-    if (!user || !db) return;
-    if(!window.confirm("This will overwrite your current cloud database with the default bill list. Are you sure?")) return;
+    if(!window.confirm("This will overwrite your data with default bills. Are you sure?")) return;
     
-    try {
-      const batch = writeBatch(db);
-      
-      INITIAL_BILLS.forEach(bill => {
-         // Seed to PRIVATE collection
-         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id);
-         batch.set(docRef, bill);
-      });
-      
-      await batch.commit();
-      alert("Database reset to defaults.");
-    } catch (e) {
-      console.error("Error resetting data:", e);
-      alert("Failed to reset data.");
+    // Local Reset
+    setBills(INITIAL_BILLS);
+    localStorage.setItem('vantage_bills', JSON.stringify(INITIAL_BILLS));
+
+    // Cloud Reset
+    if (user && db) {
+      try {
+        const batch = writeBatch(db);
+        INITIAL_BILLS.forEach(bill => {
+           const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id);
+           batch.set(docRef, bill);
+        });
+        await batch.commit();
+      } catch (e) {
+        console.error("Cloud reset failed", e);
+      }
     }
   };
 
@@ -581,6 +602,28 @@ export default function App() {
   };
 
   const quickAction = (action, item) => {
+    // If it's an analysis request for a bill, try to be smarter
+    if (action.includes("Analyze") && item.startsWith("HB")) {
+       const bill = bills.find(b => b.id === item);
+       if (bill) {
+          const detailedPrompt = `I need a legislative analysis of ${bill.id}: "${bill.title}". 
+          
+          Context:
+          - Role: ${bill.role}
+          - Committee: ${bill.committee}
+          - Status: ${bill.status}
+          
+          Please identify:
+          1. The likely political intent.
+          2. Potential fiscal impacts to watch for.
+          3. Key stakeholders who might oppose this.`;
+          
+          setShowAIPanel(true);
+          setAiPrompt(detailedPrompt); // Pre-fill the prompt bar but don't auto-send so user can edit
+          return;
+       }
+    }
+
     setShowAIPanel(true);
     setAiPrompt(`${action}: "${item}"`);
   };
