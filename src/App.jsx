@@ -40,7 +40,8 @@ import {
   ExternalLink,
   ToggleLeft,
   ToggleRight,
-  LogOut
+  LogOut,
+  Terminal
 } from 'lucide-react';
 
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
@@ -234,6 +235,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [intelItems, setIntelItems] = useState([]);
   const [isScanning, setIsScanning] = useState(false);
+  const [scanLog, setScanLog] = useState([]); // Debug log
   
   // UI State
   const [showAIPanel, setShowAIPanel] = useState(false);
@@ -253,58 +255,78 @@ export default function App() {
   // --- RSS FETCHING LOGIC ---
   const fetchFeeds = async () => {
     setIsScanning(true);
+    setScanLog(prev => ["Starting scan...", ...prev]);
     let allItems = [];
 
     const fetchPromises = FEED_CONFIG.map(async (feed) => {
       try {
+        setScanLog(prev => [`Requesting: ${feed.name}...`, ...prev]);
         // Use allorigins.win as a CORS proxy to fetch RSS XML
-        const response = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(feed.url)}`);
+        const cacheBuster = `&_cb=${new Date().getTime()}`;
+        const response = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(feed.url)}${cacheBuster}`);
         const data = await response.json();
         
-        if (!data.contents) throw new Error("No content");
+        if (!data.contents) throw new Error("No content received from proxy");
 
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(data.contents, "text/xml");
-        const items = xmlDoc.querySelectorAll("item");
         
+        // Support both RSS <item> and Atom <entry>
+        let items = Array.from(xmlDoc.querySelectorAll("item"));
+        if (items.length === 0) {
+            items = Array.from(xmlDoc.querySelectorAll("entry"));
+        }
+
+        if (items.length === 0) {
+            setScanLog(prev => [`${feed.name}: Connected, but 0 items found.`, ...prev]);
+            return [];
+        }
+        
+        setScanLog(prev => [`${feed.name}: Found ${items.length} items.`, ...prev]);
+
         // Convert XML items to our app's format (limit 3 per feed)
-        const parsedItems = Array.from(items).slice(0, 3).map(item => {
+        const parsedItems = items.slice(0, 3).map(item => {
           const title = item.querySelector("title")?.textContent || "Untitled";
-          const link = item.querySelector("link")?.textContent || "#";
-          const desc = item.querySelector("description")?.textContent?.replace(/<[^>]*>?/gm, '').slice(0, 150) + "..." || "No summary available.";
-          const pubDate = item.querySelector("pubDate")?.textContent ? new Date(item.querySelector("pubDate")?.textContent).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : "Recent";
+          
+          let link = item.querySelector("link")?.textContent;
+          if (!link) link = item.querySelector("link")?.getAttribute("href");
+          
+          let desc = item.querySelector("description")?.textContent;
+          if (!desc) desc = item.querySelector("summary")?.textContent;
+          desc = desc?.replace(/<[^>]*>?/gm, '').slice(0, 150) + "..." || "No summary available.";
+          
+          let pubDate = item.querySelector("pubDate")?.textContent;
+          if (!pubDate) pubDate = item.querySelector("updated")?.textContent;
+          pubDate = pubDate ? new Date(pubDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : "Recent";
 
           return {
             id: Math.random().toString(36).substr(2, 9),
             title: title,
             source: feed.name,
-            url: link,
+            url: link || feed.url,
             summary: desc,
-            score: Math.floor(Math.random() * 5) + 3, // Mock score for now
+            score: Math.floor(Math.random() * 5) + 3,
             date: pubDate
           };
         });
         return parsedItems;
       } catch (err) {
-        console.warn(`Failed to fetch ${feed.name}:`, err);
-        // Fallback mock if fetch fails
-        return [{
-          id: Math.random().toString(36).substr(2, 9),
-          title: `Update from ${feed.name} (Simulated)`,
-          source: feed.name,
-          url: feed.url,
-          summary: "Connection to live feed interrupted. Displaying placeholder data.",
-          score: 5,
-          date: "Today"
-        }];
+        setScanLog(prev => [`${feed.name}: FAILED - ${err.message}`, ...prev]);
+        return [];
       }
     });
 
     const results = await Promise.all(fetchPromises);
-    allItems = results.flat().sort((a, b) => 0.5 - Math.random()); // Shuffle for feed feel
+    allItems = results.flat().sort((a, b) => 0.5 - Math.random()); 
     
-    setIntelItems(allItems);
+    // Safety check: ensure we never set empty array
+    if (allItems.length > 0) {
+        setIntelItems(allItems);
+    }
+    // removed simulated backup so only real feed items show
+    
     setIsScanning(false);
+    setScanLog(prev => [`Scan complete. Total items: ${allItems.length}`, ...prev]);
   };
 
   useEffect(() => {
@@ -473,20 +495,30 @@ export default function App() {
   );
 
   const IntelligenceView = () => (
-    <div className="animate-in slide-in-from-right-4 duration-300">
-      <div className="flex justify-between items-center mb-6">
-        <div><h2 className="text-2xl font-bold text-slate-900">Vantage Intelligence</h2><p className="text-slate-500 text-sm">Media monitoring and strategic response</p></div>
+    <div className="animate-in slide-in-from-right-4 duration-300 flex flex-col h-full">
+      <div className="flex justify-between items-center mb-6 shrink-0">
+        <div><h2 className="text-2xl font-bold text-slate-900">Vantage Intelligence</h2><p className="text-slate-500 text-sm">Real-time media monitoring</p></div>
         <div className="flex gap-2">
            <button onClick={fetchFeeds} className="bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2"><RefreshCw size={16} className={isScanning ? "animate-spin" : ""}/> Scan</button>
            <button onClick={() => quickAction("Draft daily briefing based on", "current intel feed")} className="bg-slate-900 text-white px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2"><FileText size={16}/> Briefing</button>
         </div>
       </div>
-      <div className="grid grid-cols-1 gap-4">
-        {isScanning ? (
-           <div className="p-12 text-center text-slate-400">
-             <Loader size={32} className="animate-spin mx-auto mb-4 text-blue-500"/>
-             <p>Scanning intelligence sources...</p>
-           </div>
+      
+      {/* Scan Log / Debug Area */}
+      <div className="bg-slate-900 text-green-400 p-3 rounded-lg mb-4 text-xs font-mono h-32 overflow-y-auto border border-slate-700 shadow-inner">
+        <div className="flex items-center gap-2 mb-2 border-b border-slate-700 pb-1 text-white font-bold"><Terminal size={12}/> SYSTEM LOG</div>
+        {scanLog.map((log, i) => (
+            <div key={i} className="opacity-80">{'>'} {log}</div>
+        ))}
+        {scanLog.length === 0 && <div className="opacity-50 italic">Ready to scan.</div>}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 flex-1 overflow-y-auto">
+        {intelItems.length === 0 && !isScanning ? (
+            <div className="text-center py-20 text-slate-400">
+                <Activity size={48} className="mx-auto mb-4 opacity-20"/>
+                <p>No intelligence found. Click "Scan" to fetch live data.</p>
+            </div>
         ) : (
           intelItems.map((item) => (
             <div key={item.id} className={`bg-white p-5 rounded-xl border shadow-sm transition-all hover:shadow-md flex flex-col md:flex-row gap-4 ${item.score > 7 ? 'border-l-4 border-l-red-500 border-y-slate-200 border-r-slate-200' : 'border-slate-200'}`}>
@@ -519,47 +551,39 @@ export default function App() {
 
   const CommitteeAnalysisView = () => {
     const [selectedComm, setSelectedComm] = useState('APP');
-    const [analyzingIds, setAnalyzingIds] = useState({});
-    const [results, setResults] = useState({});
-    const [showMaterials, setShowMaterials] = useState(true);
+    const [analyzing, setAnalyzing] = useState(false);
+    const [inputMode, setInputMode] = useState('text'); // 'text' or 'url'
+    const [docInput, setDocInput] = useState('');
+    const [analysisResult, setAnalysisResult] = useState('');
 
     const committees = {
-      APP: { 
-        name: "Appropriations", 
-        docs: [
-          { id: 'c1', title: "Gov. Proposed Supp. Budget", type: "Budget Summary", date: "Jan 12", risk: "High", size: "2.4 MB" },
-          { id: 'c2', title: "HB 1055 - Transparency Ombudsman", type: "Fiscal Note", date: "Jan 12", risk: "Low", size: "156 KB" }
-        ]
-      },
-      FIN: { 
-        name: "Finance", 
-        docs: [
-           { id: 'c3', title: "Revenue Forecast - Q4 2025", type: "Forecast Report", date: "Jan 13", risk: "Medium", size: "4.1 MB" },
-           { id: 'c4', title: "HB 1564 - B&O Tax Exemption", type: "Staff Report", date: "Jan 13", risk: "High", size: "320 KB" }
-        ]
-      },
-      ELHS: { name: "Early Learning & Human Svcs", docs: [] },
-      TEDV: { name: "Tech & Econ Dev", docs: [] }
+      APP: { name: "Appropriations" },
+      FIN: { name: "Finance" },
+      ELHS: { name: "Early Learning & Human Svcs" },
+      TEDV: { name: "Tech & Econ Dev" }
     };
 
-    const runAnalysis = async (doc) => {
-       setAnalyzingIds(prev => ({...prev, [doc.id]: true}));
-       const prompt = `Analyze the committee document "${doc.title}" (${doc.type}). 
-       1. Summarize the main objective in 2 sentences. 
-       2. Identify specific fiscal or policy risks for a Republican member. 
-       3. Draft 2 hard-hitting questions for the sponsor/testifier.`;
+    const handleAnalysis = async () => {
+       if (!docInput.trim()) return;
+       setAnalyzing(true);
+       
+       const prompt = `Analyze this legislative document content:
+       
+       "${docInput.substring(0, 5000)}"
+       
+       1. Executive Summary (2 sentences).
+       2. Fiscal Risks for WA State.
+       3. 3 Strategic Questions for the Committee Hearing.`;
        
        const response = await callGemini(prompt, 'policy');
-       setResults(prev => ({...prev, [doc.id]: response || "Analysis failed. Try again."}));
-       setAnalyzingIds(prev => ({...prev, [doc.id]: false}));
+       setAnalysisResult(response || "Analysis failed. Please verify API key.");
+       setAnalyzing(false);
     };
-
-    const activeDocs = committees[selectedComm]?.docs || [];
 
     return (
       <div className="animate-in slide-in-from-right-4 duration-300 h-full flex flex-col">
         <div className="flex justify-between items-center mb-6 shrink-0">
-          <div><h2 className="text-2xl font-bold text-slate-900">Committee Analysis Tool</h2><p className="text-slate-500 text-sm">Instant document analysis & risk assessment</p></div>
+          <div><h2 className="text-2xl font-bold text-slate-900">Committee Analysis Tool</h2><p className="text-slate-500 text-sm">Deep dive analysis on bills and reports</p></div>
           <div className="flex bg-white rounded-lg border border-slate-300 p-1">
              {Object.entries(committees).map(([key, data]) => (
                 <button 
@@ -574,75 +598,56 @@ export default function App() {
         </div>
 
         <div className="flex-1 flex gap-6 overflow-hidden">
-           <div className={`w-full md:w-1/3 flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden ${!showMaterials ? 'hidden md:flex' : ''}`}>
-              <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-                 <h3 className="font-bold text-slate-700 text-sm uppercase tracking-wider">Latest Materials</h3>
-                 <span className="bg-blue-100 text-blue-700 text-[10px] px-2 py-0.5 rounded-full font-bold">{activeDocs.length} Docs</span>
+           {/* Left: Input Area */}
+           <div className="w-full md:w-1/3 flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-slate-100 bg-slate-50/50">
+                 <h3 className="font-bold text-slate-700 text-sm uppercase tracking-wider mb-2">Document Input</h3>
+                 <p className="text-xs text-slate-500">Paste the text of a bill, amendment, or fiscal note below.</p>
               </div>
-              <div className="flex-1 overflow-y-auto p-2 space-y-2">
-                 {activeDocs.length === 0 && <div className="p-6 text-center text-slate-400 italic text-sm">No new materials found.</div>}
-                 {activeDocs.map(doc => (
-                    <div key={doc.id} className="p-3 border border-slate-100 rounded hover:bg-slate-50 hover:border-blue-200 transition-all group">
-                       <div className="flex justify-between items-start mb-1">
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${doc.risk === 'High' ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-slate-100 text-slate-500'}`}>{doc.type}</span>
-                          <span className="text-[10px] text-slate-400">{doc.date}</span>
-                       </div>
-                       <h4 className="font-semibold text-slate-800 text-sm leading-tight mb-2">{doc.title}</h4>
-                       <div className="flex items-center justify-between gap-2">
-                          <span className="text-[10px] text-slate-400 font-mono flex-1">{doc.size}</span>
-                          <button 
-                             onClick={() => setViewingCitation(doc.title + " (Source Document)")}
-                             className="text-xs bg-slate-100 text-slate-600 hover:bg-slate-200 px-2 py-1 rounded font-bold flex items-center gap-1 transition-colors"
-                             title="View Document Directly"
-                          >
-                             <ExternalLink size={12}/> View
-                          </button>
-                          <button 
-                             onClick={() => runAnalysis(doc)}
-                             disabled={analyzingIds[doc.id]} 
-                             className="text-xs bg-white border border-slate-300 text-slate-600 hover:border-blue-500 hover:text-blue-600 px-2 py-1 rounded font-bold flex items-center gap-1 transition-colors"
-                          >
-                             {analyzingIds[doc.id] ? <Loader size={12} className="animate-spin"/> : <Sparkles size={12}/>}
-                             {analyzingIds[doc.id] ? 'Scanning...' : 'Analyze'}
-                          </button>
-                       </div>
-                    </div>
-                 ))}
+              <div className="flex-1 p-4 flex flex-col">
+                 <textarea 
+                    className="flex-1 w-full border border-slate-200 rounded-lg p-3 text-xs font-mono focus:outline-none focus:border-blue-500 resize-none"
+                    placeholder="Paste document text here..."
+                    value={docInput}
+                    onChange={(e) => setDocInput(e.target.value)}
+                 />
+                 <button 
+                    onClick={handleAnalysis}
+                    disabled={analyzing || !docInput}
+                    className="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
+                 >
+                    {analyzing ? <Loader size={16} className="animate-spin"/> : <Sparkles size={16}/>}
+                    {analyzing ? 'Analyzing...' : 'Run Analysis'}
+                 </button>
               </div>
            </div>
 
+           {/* Right: Analysis Results */}
            <div className="flex-1 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200 p-6 overflow-y-auto relative">
-              {Object.keys(results).length === 0 ? (
+              {!analysisResult ? (
                  <div className="h-full flex flex-col items-center justify-center text-slate-400">
                     <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mb-4 shadow-sm border border-slate-200">
-                       <Sparkles size={32} className="text-slate-300"/>
+                       <FileText size={32} className="text-slate-300"/>
                     </div>
-                    <p className="font-bold">Select a document to analyze</p>
-                    <p className="text-sm mt-1">AI will identify risks and draft questions.</p>
+                    <p className="font-bold">Ready to Analyze</p>
+                    <p className="text-sm mt-1">Paste text on the left to generate insights.</p>
                  </div>
               ) : (
-                 <div className="space-y-6">
-                    {activeDocs.filter(d => results[d.id]).map(doc => (
-                       <div key={doc.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
-                          <div className="p-4 border-b border-slate-100 bg-slate-900 text-white flex justify-between items-center">
-                             <div className="flex items-center gap-2">
-                                <FileText size={16} className="text-blue-300"/>
-                                <span className="font-bold text-sm">{doc.title}</span>
-                             </div>
-                             <div className="flex items-center gap-2">
-                               <button onClick={() => setViewingCitation(doc.title)} className="text-slate-400 hover:text-white" title="View Document"><ExternalLink size={16}/></button>
-                               <button onClick={() => setResults(prev => {const n = {...prev}; delete n[doc.id]; return n;})} className="text-slate-400 hover:text-white"><X size={16}/></button>
-                             </div>
-                          </div>
-                          <div className="p-6">
-                             <SimpleMarkdown text={results[doc.id]} />
-                             <div className="mt-4 pt-4 border-t border-slate-100 flex gap-2">
-                                <button className="text-xs font-bold text-slate-500 hover:text-blue-600 flex items-center gap-1"><CheckCircle size={14}/> Save to Briefing</button>
-                                <button className="text-xs font-bold text-slate-500 hover:text-blue-600 flex items-center gap-1"><Printer size={14}/> Print</button>
-                             </div>
-                          </div>
+                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
+                    <div className="p-4 border-b border-slate-100 bg-slate-900 text-white flex justify-between items-center">
+                       <div className="flex items-center gap-2">
+                          <Sparkles size={16} className="text-yellow-300"/>
+                          <span className="font-bold text-sm">Vantage Analysis</span>
                        </div>
-                    ))}
+                       <button onClick={() => setAnalysisResult('')} className="text-slate-400 hover:text-white"><X size={16}/></button>
+                    </div>
+                    <div className="p-6">
+                       <SimpleMarkdown text={analysisResult} />
+                       <div className="mt-6 pt-4 border-t border-slate-100 flex gap-2">
+                          <button className="text-xs font-bold text-slate-500 hover:text-blue-600 flex items-center gap-1"><CheckCircle size={14}/> Save to Briefing</button>
+                          <button className="text-xs font-bold text-slate-500 hover:text-blue-600 flex items-center gap-1"><Printer size={14}/> Print Report</button>
+                       </div>
+                    </div>
                  </div>
               )}
            </div>
