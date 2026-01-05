@@ -58,7 +58,8 @@ import {
   FolderOpen,
   HardDrive,
   CheckSquare,
-  Square
+  Square,
+  MessageSquare
 } from 'lucide-react';
 
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
@@ -301,6 +302,7 @@ const DocumentViewer = ({ docData, onClose }) => {
 // New Modal to Manage and Scan Bill Documents
 const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
   const [isScanning, setIsScanning] = useState(false);
+  const [importingId, setImportingId] = useState(null);
   const [documents, setDocuments] = useState(bill.documents || []);
   const [statusMsg, setStatusMsg] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
@@ -324,53 +326,96 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
     const billPageUrl = `https://app.leg.wa.gov/billsummary/?BillNumber=${number}&Year=${year}&Initiative=false`;
     const fiscalNoteUrl = `https://fnspublic.ofm.wa.gov/FNSPublicSearch/Search/bill/${number}/${sessionNum}`;
     
-    try {
-      const contents = await fetchProxyContent(billPageUrl);
-      if (!contents) throw new Error("Could not fetch bill summary page.");
+    const newDocs = [];
+    const uniqueDocs = [...documents];
+    let addedCount = 0;
 
-      const newDocs = [];
-
-      // Add the calculated Fiscal Note URL
-      newDocs.push({
-         id: `fn-${number}-${sessionNum}`,
-         title: `Fiscal Note Search (${year})`,
-         type: "Fiscal Note",
-         url: fiscalNoteUrl,
-         dateFound: new Date().toLocaleDateString(),
-         imported: false
-      });
-
-      // Look for lawfilesext links in the summary page
-      const docRegex = /https:\/\/lawfilesext\.leg\.wa\.gov\/[^"']+/g;
-      const foundLinks = contents.match(docRegex) || [];
-      
-      foundLinks.forEach(link => {
-         let type = "Unknown";
-         if(link.includes("Pdf/Bills")) type = "Original Bill";
-         if(link.includes("Amendments")) type = "Amendment";
-         if(link.includes("Reports")) type = "Bill Report";
-         if(link.includes("Fiscal")) type = "Fiscal Note";
-
-         const fileName = link.split('/').pop();
-         newDocs.push({
-            id: fileName, 
-            title: `${type} - ${fileName}`,
-            type: type,
-            url: link,
-            dateFound: new Date().toLocaleDateString(),
-            imported: false
-         });
-      });
-
-      // Merge and Filter duplicates
-      const uniqueDocs = [...documents];
-      let addedCount = 0;
-      newDocs.forEach(d => {
+    const addDoc = (d) => {
         if(!uniqueDocs.find(ud => ud.url === d.url)) {
           uniqueDocs.push({...d, isNew: true});
           addedCount++;
         }
-      });
+    };
+
+    try {
+        // 1. Fetch Fiscal Note Page specifically
+        try {
+            const fnContent = await fetchProxyContent(fiscalNoteUrl);
+            if(fnContent) {
+                // Look for PDF links on the fiscal note page
+                // Pattern often looks like: href=".../fiscalnote_xyz.pdf"
+                // Simple regex to find any PDF link on the page
+                const pdfRegex = /href="([^"]+\.pdf)"/gi;
+                let match;
+                let foundFn = false;
+                while ((match = pdfRegex.exec(fnContent)) !== null) {
+                    let pdfLink = match[1];
+                    // Handle relative links if necessary (though OFM usually uses full or absolute)
+                    if (pdfLink.startsWith('/')) {
+                        pdfLink = `https://fnspublic.ofm.wa.gov${pdfLink}`;
+                    }
+                    
+                    addDoc({
+                        id: `fn-${pdfLink.split('/').pop()}`,
+                        title: `Fiscal Note (${year})`,
+                        type: "Fiscal Note",
+                        url: pdfLink,
+                        dateFound: new Date().toLocaleDateString(),
+                        imported: false
+                    });
+                    foundFn = true;
+                }
+                
+                if (!foundFn) {
+                     // If no specific PDF found, add the search page itself
+                    addDoc({
+                        id: `fn-search-${number}`,
+                        title: `Fiscal Note Search Page`,
+                        type: "Fiscal Note Portal",
+                        url: fiscalNoteUrl,
+                        dateFound: new Date().toLocaleDateString(),
+                        imported: false
+                    });
+                }
+            }
+        } catch(e) {
+            console.warn("Fiscal note scan issue:", e);
+             // Fallback to search page if scan fails
+             addDoc({
+                id: `fn-search-${number}`,
+                title: `Fiscal Note Search Page`,
+                type: "Fiscal Note Portal",
+                url: fiscalNoteUrl,
+                dateFound: new Date().toLocaleDateString(),
+                imported: false
+            });
+        }
+
+      // 2. Fetch Bill Summary Page for LawFiles
+      const contents = await fetchProxyContent(billPageUrl);
+      if (contents) {
+         // Look for lawfilesext links
+         const docRegex = /https:\/\/lawfilesext\.leg\.wa\.gov\/[^"']+/g;
+         const foundLinks = contents.match(docRegex) || [];
+         
+         foundLinks.forEach(link => {
+            let type = "Unknown";
+            if(link.includes("Pdf/Bills")) type = "Original Bill";
+            if(link.includes("Amendments")) type = "Amendment";
+            if(link.includes("Reports")) type = "Bill Report";
+            if(link.includes("Fiscal")) type = "Fiscal Note";
+
+            const fileName = link.split('/').pop();
+            addDoc({
+               id: fileName, 
+               title: `${type} - ${fileName}`,
+               type: type,
+               url: link,
+               dateFound: new Date().toLocaleDateString(),
+               imported: false
+            });
+         });
+      }
 
       setDocuments(uniqueDocs);
       setStatusMsg(`Scan complete. Found ${addedCount} new documents.`);
@@ -380,6 +425,51 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
       setStatusMsg(`Scan failed: ${e.message}`);
     } finally {
       setIsScanning(false);
+    }
+  };
+
+  const importDocContent = async (docIndex) => {
+    const docToImport = documents[docIndex];
+    setImportingId(docToImport.id);
+    setStatusMsg(`Importing ${docToImport.title}...`);
+    
+    try {
+      const contents = await fetchProxyContent(docToImport.url);
+      
+      if (!contents) throw new Error("Empty response from source.");
+      
+      // Safety check for Firestore size limit (approx 1MB)
+      if (contents.length > 900000) {
+        throw new Error("Document too large for database storage.");
+      }
+
+      // Basic HTML stripping if it's HTML, otherwise assume text
+      let cleanText = contents;
+      if (docToImport.url.endsWith('.htm') || docToImport.url.endsWith('.html') || contents.includes('<html')) {
+         const parser = new DOMParser();
+         const dom = parser.parseFromString(contents, 'text/html');
+         cleanText = dom.body.innerText;
+      }
+
+      const updatedDocs = [...documents];
+      updatedDocs[docIndex] = { 
+        ...docToImport, 
+        content: cleanText, 
+        imported: true,
+        importedDate: new Date().toLocaleDateString()
+      };
+      
+      setDocuments(updatedDocs);
+      setStatusMsg("Document imported successfully.");
+      
+      // Auto-save to parent bill immediately
+      onSave({ ...bill, documents: updatedDocs });
+
+    } catch (e) {
+      console.error(e);
+      setStatusMsg(`Import failed: ${e.message}`);
+    } finally {
+      setImportingId(null);
     }
   };
 
@@ -431,12 +521,14 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
                     onChange={(e) => setSearchTerm(e.target.value)}
                  />
               </div>
+              
+              {/* Batch Action */}
               <button 
                 onClick={() => onAnalyzeSelected(filteredDocs.filter(d => selectedDocIds.has(d.id)))}
                 disabled={selectedDocIds.size === 0}
                 className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-bold disabled:opacity-50 flex items-center gap-1"
               >
-                <Sparkles size={14}/> Analyze Selected ({selectedDocIds.size})
+                <MessageSquare size={14}/> Chat with Selected ({selectedDocIds.size})
               </button>
            </div>
         </div>
@@ -468,7 +560,20 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
                     </div>
                   </div>
                   <div className="flex gap-2 shrink-0">
-                     <a href={doc.url} target="_blank" rel="noreferrer" className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded" title="Open External PDF"><ExternalLink size={16}/></a>
+                     {/* Import Button */}
+                     {!doc.imported && (
+                       <button 
+                         onClick={() => importDocContent(idx)} 
+                         disabled={importingId !== null}
+                         className="p-1.5 text-blue-600 hover:bg-blue-50 rounded border border-blue-100" 
+                         title="Import Content to Database"
+                       >
+                         {importingId === doc.id ? <Loader size={16} className="animate-spin"/> : <Download size={16}/>}
+                       </button>
+                     )}
+                     
+                     {/* View Button */}
+                     <a href={doc.url} target="_blank" rel="noreferrer" className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded" title="Open Document"><ExternalLink size={16}/></a>
                   </div>
                 </div>
               ))}
@@ -766,14 +871,30 @@ export default function App() {
   const handleAnalyzeSelectedDocs = (selectedDocs) => {
      if(selectedDocs.length === 0) return;
      
-     let prompt = `I need an analysis of the following documents related to a legislative bill:\n\n`;
+     let prompt = `I need an analysis of the following legislative documents for a bill. 
+     
+     DOCUMENTS PROVIDED:`;
+     
      selectedDocs.forEach(d => {
-         prompt += `- ${d.title}: ${d.url}\n`;
+         prompt += `\n\n--- DOCUMENT: ${d.title} ---`;
+         if(d.content && d.content.length > 50) {
+             // Truncate content to avoid token limits, prioritizing the beginning
+             prompt += `\n[CONTENT SNIPPET]:\n${d.content.substring(0, 4000)}...`;
+         } else {
+             prompt += `\n[URL]: ${d.url}`;
+         }
      });
-     prompt += `\nPlease analyze these resources. Note: If you cannot access the links directly, provide a template for me to paste the key text from these documents.`;
+
+     prompt += `\n\nINSTRUCTIONS: 
+     1. Summarize the key policy changes proposed.
+     2. Identify any specific fiscal impacts mentioned in the Fiscal Notes.
+     3. Highlight any controversial sections or potential opposition points.
+     
+     If you only have the URL and not the content, please generate a specific question list I can use to interrogate the document manually.`;
      
      setShowAIPanel(true);
      setAiPrompt(prompt);
+     // Auto-trigger if desired, or let user review prompt. Let's let user review.
   };
 
   const fetchFeeds = async () => {
