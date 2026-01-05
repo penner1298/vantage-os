@@ -54,7 +54,7 @@ import {
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
 
 // Note: To use environment variables, ensure your build target supports ES2020 or later.
-// For this deployment, we default to an empty string to ensure compatibility and prevent build warnings.
+// For this deployment, we default to an empty string to ensure compatibility.
 const apiKey = ""; 
 
 const callGemini = async (prompt, systemContext = "general", retries = 3) => {
@@ -110,25 +110,27 @@ const BILL_STATUSES = [
   "Dead"
 ];
 
+// UPDATED: Full House Committee List
 const WA_COMMITTEES = [
+  "Agriculture & Natural Resources",
   "Appropriations",
   "Capital Budget",
   "Civil Rights & Judiciary",
   "Community Safety",
   "Consumer Protection & Business",
+  "Early Learning & Human Services",
   "Education",
   "Environment & Energy",
   "Finance",
   "Health Care & Wellness",
   "Housing",
-  "Human Services",
-  "Innovation, Community & Econ Dev",
   "Labor & Workplace Standards",
   "Local Government",
-  "Regulated Substances & Gaming",
-  "State Govt & Tribal Relations",
-  "Transportation",
-  "Rules"
+  "Postsecondary Education & Workforce",
+  "Rules",
+  "State Government & Tribal Relations",
+  "Technology, Economic Development, & Veterans",
+  "Transportation"
 ];
 
 // Initial Data loaded from source provided with Primary Sponsor
@@ -142,10 +144,10 @@ const INITIAL_BILLS = [
   { id: "HB 1051", title: "IEP team meetings/recording", status: "In Committee", committee: "Education", role: "Co-Sponsor", sponsor: "Rep. Walsh", priority: "Low", year: "2025" },
   { id: "HB 1055", title: "Transparency ombuds study", status: "In Committee", committee: "Appropriations", role: "Co-Sponsor", sponsor: "Rep. Abbarno", priority: "Medium", year: "2025" },
   { id: "HB 1086", title: "Motor vehicle chop shops", status: "In Committee", committee: "Community Safety", role: "Co-Sponsor", sponsor: "Rep. Low", priority: "Low", year: "2025" },
-  { id: "HB 1221", title: "Gubernatorial proclamations", status: "In Committee", committee: "State Govt & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Volz", priority: "Medium", year: "2025" },
+  { id: "HB 1221", title: "Gubernatorial proclamations", status: "In Committee", committee: "State Government & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Volz", priority: "Medium", year: "2025" },
   { id: "HB 1324", title: "Transportation funding/CCA", status: "In Committee", committee: "Transportation", role: "Co-Sponsor", sponsor: "Rep. Barkis", priority: "High", year: "2025" },
-  { id: "HB 1585", title: "Voter citizenship verif.", status: "In Committee", committee: "State Govt & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Marshall", priority: "High", year: "2025" },
-  { id: "HB 2058", title: "Private entity audits", status: "In Committee", committee: "State Govt & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Couture", priority: "High", year: "2025" },
+  { id: "HB 1585", title: "Voter citizenship verif.", status: "In Committee", committee: "State Government & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Marshall", priority: "High", year: "2025" },
+  { id: "HB 2058", title: "Private entity audits", status: "In Committee", committee: "State Government & Tribal Relations", role: "Co-Sponsor", sponsor: "Rep. Couture", priority: "High", year: "2025" },
   
   // Passed / Vetoed
   { id: "HB 1106", title: "Disabled veterans/prop. tax", status: "Signed into Law", committee: "Finance", role: "Co-Sponsor", sponsor: "Rep. Barnard", priority: "High", year: "2025" },
@@ -155,8 +157,8 @@ const INITIAL_BILLS = [
 const MY_COMMITTEES = {
   APP: { name: "Appropriations", role: "Assistant Ranking Member" },
   FIN: { name: "Finance", role: "Member" },
-  ELHS: { name: "Early Learning & Human Svcs", role: "Member" },
-  TEDV: { name: "Tech, Econ Dev & Veterans", role: "Member" }
+  ELHS: { name: "Early Learning & Human Services", role: "Member" },
+  TEDV: { name: "Technology, Economic Development, & Veterans", role: "Member" }
 };
 
 const FEED_CONFIG = [
