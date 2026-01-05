@@ -324,13 +324,12 @@ const DocumentViewer = ({ docData, onClose }) => {
 };
 
 // New Modal to Manage and Scan Bill Documents
-const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
+const BillDocumentsModal = ({ bill, onClose, onSave }) => {
   const [isScanning, setIsScanning] = useState(false);
   const [importingId, setImportingId] = useState(null);
   const [documents, setDocuments] = useState(bill.documents || []);
   const [statusMsg, setStatusMsg] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedDocIds, setSelectedDocIds] = useState(new Set());
 
   const getSessionNumber = (year) => {
     const yr = parseInt(year);
@@ -441,17 +440,20 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
     try {
       const contents = await fetchProxyContent(docToImport.url);
       
-      // If it's a binary PDF, the text proxy might give us garbage or nothing useful for simple string storage
-      // So we mainly rely on the download. 
-      // However, if it's HTML, we save it.
+      if (!contents) throw new Error("Empty response.");
+      
+      // Safety check for Firestore size limit (approx 1MB)
+      if (contents.length > 900000) {
+        throw new Error("Document too large for database storage.");
+      }
+
+      // Basic HTML stripping if it's HTML, otherwise assume text
       let cleanText = "";
       if (docToImport.url.endsWith('.htm') || docToImport.url.endsWith('.html') || (typeof contents === 'string' && contents.includes('<html'))) {
            const parser = new DOMParser();
            const dom = parser.parseFromString(contents, 'text/html');
            cleanText = dom.body.innerText;
       } else {
-          // It's likely a PDF binary. We flag it as imported so we know we have the file.
-          // We don't store binary in Firestore.
           cleanText = "[PDF Binary Downloaded]";
       }
 
@@ -471,13 +473,6 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
     } finally {
         setImportingId(null);
     }
-  };
-
-  const toggleSelect = (id) => {
-    const newSet = new Set(selectedDocIds);
-    if (newSet.has(id)) newSet.delete(id);
-    else newSet.add(id);
-    setSelectedDocIds(newSet);
   };
 
   const saveAndClose = () => {
@@ -521,13 +516,6 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
                     onChange={(e) => setSearchTerm(e.target.value)}
                  />
               </div>
-              <button 
-                onClick={() => onAnalyzeSelected(filteredDocs.filter(d => selectedDocIds.has(d.id)))}
-                disabled={selectedDocIds.size === 0}
-                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-bold disabled:opacity-50 flex items-center gap-1"
-              >
-                <Sparkles size={14}/> Analyze Selected ({selectedDocIds.size})
-              </button>
            </div>
         </div>
 
@@ -541,11 +529,11 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
           ) : (
             <div className="space-y-2">
               {filteredDocs.map((doc, idx) => (
-                <div key={idx} className={`bg-white p-3 rounded border flex justify-between items-center transition-all shadow-sm ${selectedDocIds.has(doc.id) ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}>
+                <div key={idx} className={`bg-white p-3 rounded border flex justify-between items-center transition-all shadow-sm border-slate-200 hover:border-blue-300`}>
                   <div className="flex items-center gap-3 overflow-hidden">
-                    <button onClick={() => toggleSelect(doc.id)} className="text-slate-400 hover:text-blue-600">
-                       {selectedDocIds.has(doc.id) ? <CheckSquare size={18} className="text-blue-600"/> : <Square size={18}/>}
-                    </button>
+                    <div className={`p-2 rounded ${doc.imported ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>
+                      {doc.imported ? <HardDrive size={16}/> : <Globe size={16}/>}
+                    </div>
                     <div className="min-w-0">
                       <div className="text-sm font-bold text-slate-800 flex items-center gap-2">
                         <span className="truncate">{doc.title}</span>
@@ -559,19 +547,21 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
                   </div>
                   <div className="flex gap-2 shrink-0">
                      {/* Import Button */}
-                     {!doc.imported && (
+                     {!doc.imported ? (
                        <button 
                          onClick={() => importDocContent(idx)} 
                          disabled={importingId !== null}
-                         className="p-1.5 text-blue-600 hover:bg-blue-50 rounded border border-blue-100" 
-                         title="Import & Download"
+                         className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded border border-blue-200" 
+                         title="Import to Database"
                        >
-                         {importingId === doc.id ? <Loader size={16} className="animate-spin"/> : <Download size={16}/>}
+                         {importingId === doc.id ? <Loader size={12} className="animate-spin"/> : <Download size={12}/>}
+                         Save to Library
                        </button>
+                     ) : (
+                        <div className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-green-600 bg-green-50 rounded border border-green-200 select-none">
+                            <CheckCircle size={12}/> Saved
+                        </div>
                      )}
-                     
-                     {/* View Button */}
-                     <a href={doc.url} target="_blank" rel="noreferrer" className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded" title="Open External PDF"><ExternalLink size={16}/></a>
                   </div>
                 </div>
               ))}
@@ -580,7 +570,7 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
         </div>
 
         <div className="flex justify-end pt-4 border-t border-slate-100">
-           <button onClick={saveAndClose} className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-sm shadow-sm">Save & Close</button>
+           <button onClick={saveAndClose} className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-sm shadow-sm">Done</button>
         </div>
       </div>
     </div>
@@ -881,6 +871,9 @@ export default function App() {
              prompt += `\n[CONTENT SNIPPET]:\n${d.content.substring(0, 4000)}...`;
          } else {
              prompt += `\n[URL]: ${d.url}`;
+             if(d.content === "[PDF Binary Downloaded]") {
+                 prompt += `\n[NOTE]: This document is a PDF stored locally. I cannot read it directly. Please ask the user to paste relevant text from this PDF below.`;
+             }
          }
      });
 
@@ -889,7 +882,7 @@ export default function App() {
      2. Identify any specific fiscal impacts mentioned in the Fiscal Notes.
      3. Highlight any controversial sections or potential opposition points.
      
-     If you only have the URL and not the content (e.g. PDF Binary), please provide a specific prompt I can use to manually analyze it after reading the file myself.`;
+     IMPORTANT: If a document is marked as a PDF that you cannot read, explicitly state: "I see you selected [Document Name]. Since it is a PDF, I cannot read it directly. Please paste the relevant text from your local copy below."`;
      
      setShowAIPanel(true);
      setAiPrompt(prompt);
