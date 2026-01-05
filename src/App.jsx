@@ -27,30 +27,27 @@ import {
   PenTool, 
   CheckCircle, 
   Download, 
-  RefreshCw,
-  Database,
-  Mail,
-  Printer,
-  User,
-  Phone,
-  Info,
-  Plus,
-  Filter,
-  ArrowRight,
-  ExternalLink,
-  ToggleLeft,
-  ToggleRight,
+  RefreshCw, 
+  Database, 
+  Mail, 
+  Printer, 
+  User, 
+  Phone, 
+  Info, 
+  Plus, 
+  Filter, 
+  ArrowRight, 
+  ExternalLink, 
+  ToggleLeft, 
+  ToggleRight, 
   LogOut,
   Terminal
 } from 'lucide-react';
 
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
 
-// Note: To use environment variables, ensure your build target supports ES2020 or later.
-// For this deployment, we default to an empty string to ensure compatibility and prevent build warnings.
 const apiKey = ""; 
 
-// Robust Gemini Call combining retry logic from VANTAGE with Context from TRACKER
 const callGemini = async (prompt, systemContext = "general", retries = 3) => {
   if (!apiKey) return null;
 
@@ -84,9 +81,39 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
   }
 };
 
-/* --- 2. SHARED COMPONENTS --- */
+/* --- 2. DATA MANAGEMENT --- */
 
-// Markdown Renderer
+// Real 2025-2026 Sponsored Bills for Rep. Penner
+const MY_BILLS = [
+  { id: "HB 2202", title: "Dental care pilot at Rainier School", status: "Prefiled", committee: "Human Services", role: "Primary Sponsor", priority: "High" },
+  { id: "HB 1564", title: "Child care B&O tax credit", status: "In Committee", committee: "Finance", role: "Primary Sponsor", priority: "High" },
+  { id: "HB 1818", title: "Modernizing subdivision/platting laws", status: "Floor Calendar", committee: "Local Govt", role: "Primary Sponsor", priority: "Medium" },
+  { id: "HB 2049", title: "Funding K-12 education & safety", status: "Passed", committee: "Appropriations", role: "Co-Sponsor", priority: "Medium" },
+  { id: "HB 1414", title: "Career opportunities for students", status: "Passed", committee: "Education", role: "Co-Sponsor", priority: "Low" },
+  { id: "HB 2166", title: "Recognizing major religious holidays", status: "Prefiled", committee: "State Govt", role: "Co-Sponsor", priority: "Low" },
+  { id: "HB 1106", title: "Disabled veterans property tax relief", status: "Passed", committee: "Finance", role: "Co-Sponsor", priority: "High" }
+];
+
+// Real Committee Assignments
+const MY_COMMITTEES = {
+  APP: { name: "Appropriations", role: "Assistant Ranking Member" },
+  FIN: { name: "Finance", role: "Member" },
+  ELHS: { name: "Early Learning & Human Svcs", role: "Member" },
+  TEDV: { name: "Tech, Econ Dev & Veterans", role: "Member" }
+};
+
+const FEED_CONFIG = [
+  { url: "https://housedemocrats.wa.gov/feed/", name: "House Dems", category: "Official" },
+  { url: "https://senatedemocrats.wa.gov/feed/", name: "Senate Dems", category: "Official" },
+  { url: "https://houserepublicans.wa.gov/feed/", name: "House GOP", category: "Official" },
+  { url: "https://src.wastateleg.org/feed/", name: "Senate GOP", category: "Official" },
+  { url: "https://www.thestranger.com/feed", name: "The Stranger", category: "Partisan" },
+  { url: "https://www.seattletimes.com/opinion/feed/", name: "Seattle Times Op", category: "Media" },
+  { url: "https://www.spokesman.com/feeds/stories/", name: "Spokesman Main", category: "Media" }
+];
+
+/* --- 3. SHARED COMPONENTS --- */
+
 const SimpleMarkdown = ({ text, onCitationClick }) => {
   if (!text) return null;
   const parseInline = (text) => {
@@ -95,20 +122,9 @@ const SimpleMarkdown = ({ text, onCitationClick }) => {
       if (part.startsWith('**') && part.endsWith('**')) {
         return <strong key={i} className="font-bold text-slate-900">{part.slice(2, -2)}</strong>;
       }
-      if (part.startsWith('[') && part.endsWith(']')) {
-         const content = part.slice(1, -1);
-         if (content.includes(',') || content.includes('p.') || ['Fiscal Note', 'Bill Analysis'].some(t => content.includes(t))) {
-           return (
-             <button key={i} onClick={() => onCitationClick && onCitationClick(content)} className="text-blue-600 hover:text-blue-800 bg-blue-50 px-1 rounded text-xs font-semibold inline-flex items-center gap-1 border border-blue-100 mx-0.5">
-               <FileText size={10} /> {content}
-             </button>
-           );
-         }
-      }
       return part;
     });
   };
-
   return (
     <div className="space-y-2 text-sm">
       {text.split('\n').map((line, idx) => {
@@ -121,8 +137,6 @@ const SimpleMarkdown = ({ text, onCitationClick }) => {
     </div>
   );
 };
-
-// --- MODALS ---
 
 const DocumentViewer = ({ citation, onClose }) => {
   if (!citation) return null;
@@ -146,7 +160,7 @@ const DocumentViewer = ({ citation, onClose }) => {
                <p>This is a simulated view of the requested document.</p>
                <div className="p-4 bg-yellow-50 border-l-4 border-yellow-400 text-sm">
                  <strong className="block text-yellow-900 mb-1">AI Relevance Highlight</strong>
-                 The system has identified this section as relevant to your current query regarding fiscal impact.
+                 The system has identified this section as relevant to your current query.
                </div>
                <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.</p>
                <p>Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.</p>
@@ -183,7 +197,7 @@ const WarRoomModal = ({ item, onClose }) => {
         <div className="p-6 overflow-y-auto">
           <div className="mb-6">
             <h3 className="text-xl font-bold text-slate-900">{item.title}</h3>
-            <div className="text-xs text-slate-500 font-mono uppercase mt-1">{item.source} • Score: {item.score}/10</div>
+            <div className="text-xs text-slate-500 font-mono uppercase mt-1">{item.source} • {item.date}</div>
           </div>
           <div className="flex bg-slate-100 p-1 rounded-lg mb-6">
             {['Firebrand', 'Statesman', 'Wonk'].map((t) => (
@@ -204,112 +218,52 @@ const WarRoomModal = ({ item, onClose }) => {
   );
 };
 
-/* --- 3. DATA MANAGEMENT --- */
-
-// Configuration: Real Feeds
-const FEED_CONFIG = [
-  { url: "https://housedemocrats.wa.gov/feed/", name: "House Dems", category: "Official" },
-  { url: "https://senatedemocrats.wa.gov/feed/", name: "Senate Dems", category: "Official" },
-  { url: "https://houserepublicans.wa.gov/feed/", name: "House GOP", category: "Official" },
-  { url: "https://src.wastateleg.org/feed/", name: "Senate GOP", category: "Official" },
-  { url: "https://www.thestranger.com/feed", name: "The Stranger", category: "Partisan" },
-  { url: "https://www.seattletimes.com/opinion/feed/", name: "Seattle Times Op", category: "Media" },
-  { url: "https://www.spokesman.com/feeds/stories/", name: "Spokesman Main", category: "Media" }
-];
-
-const upcomingSchedule = [
-  { day: "Mon", date: "Jan 12", time: "1:30 PM", event: "Republican Caucus Meeting", type: "Caucus", location: "Caucus Room" },
-  { day: "Tue", date: "Jan 13", time: "3:30 PM", event: "Appropriations: Budget Work Session", type: "Committee", location: "JLOB 315" },
-  { day: "Wed", date: "Jan 14", time: "8:00 AM", event: "ELHS: Child Care Hearing", type: "Committee", location: "JLOB 317" },
-];
-
-const myBills = [
-  { id: "HB 1564", title: "Child care assist./B&O tax", status: "In Committee", committee: "Finance", role: "Primary Sponsor", priority: "High" },
-  { id: "HB 1818", title: "Administration of plats", status: "Floor Calendar", committee: "Local Govt", role: "Primary Sponsor", priority: "Medium" },
-  { id: "HB 2058", title: "Private entity audits", status: "Prefiled", committee: "State Govt", role: "Co-Sponsor", priority: "Medium" },
-];
-
 /* --- 4. MAIN APPLICATION --- */
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [intelItems, setIntelItems] = useState([]);
   const [isScanning, setIsScanning] = useState(false);
-  const [scanLog, setScanLog] = useState([]); // Debug log
-  
-  // UI State
+  const [scanLog, setScanLog] = useState([]); 
   const [showAIPanel, setShowAIPanel] = useState(false);
-  const [showNotifications, setShowNotifications] = useState(false);
   const [warRoomItem, setWarRoomItem] = useState(null);
-  const [viewingCitation, setViewingCitation] = useState(null);
   const [draftingBill, setDraftingBill] = useState(false);
-
-  // AI State
   const [aiPrompt, setAiPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [viewingCitation, setViewingCitation] = useState(null); // Fixed: Added state variable
   const [chatHistory, setChatHistory] = useState([
     { role: 'model', text: "**System Online.** Welcome back, Rep. Penner. I am ready to assist with legislative analysis or political strategy." }
   ]);
   const chatEndRef = useRef(null);
 
-  // --- RSS FETCHING LOGIC ---
+  // --- IMPROVED RSS FETCHING ---
   const fetchFeeds = async () => {
     setIsScanning(true);
-    setScanLog(prev => ["Starting scan...", ...prev]);
+    setScanLog(prev => ["Starting live scan...", ...prev]);
     let allItems = [];
 
     const fetchPromises = FEED_CONFIG.map(async (feed) => {
       try {
         setScanLog(prev => [`Requesting: ${feed.name}...`, ...prev]);
-        // Use allorigins.win as a CORS proxy to fetch RSS XML
-        const cacheBuster = `&_cb=${new Date().getTime()}`;
-        const response = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(feed.url)}${cacheBuster}`);
+        // Switch to rss2json.com for better reliability with frontend requests
+        const response = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}&api_key=`); 
+        // Note: rss2json has a free tier that works well without a key for limited requests
         const data = await response.json();
         
-        if (!data.contents) throw new Error("No content received from proxy");
-
-        const parser = new DOMParser();
-        const xmlDoc = parser.parseFromString(data.contents, "text/xml");
+        if (data.status !== 'ok') throw new Error("Feed parsing failed");
         
-        // Support both RSS <item> and Atom <entry>
-        let items = Array.from(xmlDoc.querySelectorAll("item"));
-        if (items.length === 0) {
-            items = Array.from(xmlDoc.querySelectorAll("entry"));
-        }
-
-        if (items.length === 0) {
-            setScanLog(prev => [`${feed.name}: Connected, but 0 items found.`, ...prev]);
-            return [];
-        }
-        
-        setScanLog(prev => [`${feed.name}: Found ${items.length} items.`, ...prev]);
-
-        // Convert XML items to our app's format (limit 3 per feed)
-        const parsedItems = items.slice(0, 3).map(item => {
-          const title = item.querySelector("title")?.textContent || "Untitled";
-          
-          let link = item.querySelector("link")?.textContent;
-          if (!link) link = item.querySelector("link")?.getAttribute("href");
-          
-          let desc = item.querySelector("description")?.textContent;
-          if (!desc) desc = item.querySelector("summary")?.textContent;
-          desc = desc?.replace(/<[^>]*>?/gm, '').slice(0, 150) + "..." || "No summary available.";
-          
-          let pubDate = item.querySelector("pubDate")?.textContent;
-          if (!pubDate) pubDate = item.querySelector("updated")?.textContent;
-          pubDate = pubDate ? new Date(pubDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : "Recent";
-
-          return {
+        const items = data.items.slice(0, 3).map(item => ({
             id: Math.random().toString(36).substr(2, 9),
-            title: title,
+            title: item.title,
             source: feed.name,
-            url: link || feed.url,
-            summary: desc,
+            url: item.link,
+            summary: item.description?.replace(/<[^>]*>?/gm, '').slice(0, 150) + "..." || "No summary.",
             score: Math.floor(Math.random() * 5) + 3,
-            date: pubDate
-          };
-        });
-        return parsedItems;
+            date: new Date(item.pubDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+        }));
+
+        setScanLog(prev => [`${feed.name}: Found ${items.length} items.`, ...prev]);
+        return items;
       } catch (err) {
         setScanLog(prev => [`${feed.name}: FAILED - ${err.message}`, ...prev]);
         return [];
@@ -317,19 +271,15 @@ export default function App() {
     });
 
     const results = await Promise.all(fetchPromises);
-    allItems = results.flat().sort((a, b) => 0.5 - Math.random()); 
+    allItems = results.flat().sort((a, b) => new Date(b.date) - new Date(a.date));
     
-    // Safety check: ensure we never set empty array
-    if (allItems.length > 0) {
-        setIntelItems(allItems);
-    }
-    // removed simulated backup so only real feed items show
-    
+    setIntelItems(allItems);
     setIsScanning(false);
     setScanLog(prev => [`Scan complete. Total items: ${allItems.length}`, ...prev]);
   };
 
   useEffect(() => {
+    // Initial fetch on load
     fetchFeeds();
   }, []);
 
@@ -346,13 +296,9 @@ export default function App() {
     setChatHistory(prev => [...prev, { role: 'user', text: prompt }]);
     setIsGenerating(true);
     
-    let context = 'general';
-    if (activeTab === 'intelligence') context = 'political';
-    if (activeTab === 'legislation') context = 'policy';
-    if (activeTab === 'committees') context = 'policy';
-
+    let context = activeTab === 'intelligence' ? 'political' : 'policy';
     const response = await callGemini(prompt, context);
-    setChatHistory(prev => [...prev, { role: 'model', text: response || "I'm having trouble connecting to the Vantage network. Please try again." }]);
+    setChatHistory(prev => [...prev, { role: 'model', text: response || "I'm having trouble connecting. Please check your API key." }]);
     setIsGenerating(false);
   };
 
@@ -366,23 +312,23 @@ export default function App() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
           <div className="flex justify-between items-start mb-2"><div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><FileText size={20}/></div><span className="text-xs font-bold text-slate-400">ACTIVE</span></div>
-          <div className="text-3xl font-bold text-slate-900">{myBills.length}</div>
+          <div className="text-3xl font-bold text-slate-900">{MY_BILLS.length}</div>
           <div className="text-sm text-slate-500">Sponsored Bills</div>
         </div>
         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-          <div className="flex justify-between items-start mb-2"><div className="p-2 bg-purple-50 text-purple-600 rounded-lg"><Users size={20}/></div><span className="text-xs font-bold text-slate-400">TODAY</span></div>
-          <div className="text-3xl font-bold text-slate-900">3</div>
-          <div className="text-sm text-slate-500">Meetings Scheduled</div>
+          <div className="flex justify-between items-start mb-2"><div className="p-2 bg-purple-50 text-purple-600 rounded-lg"><Users size={20}/></div><span className="text-xs font-bold text-slate-400">ROLE</span></div>
+          <div className="text-3xl font-bold text-slate-900">Approp.</div>
+          <div className="text-sm text-slate-500">Asst. Ranking Member</div>
         </div>
         <div className="bg-white p-5 rounded-xl border-l-4 border-l-red-500 border-y border-r border-slate-200 shadow-sm relative overflow-hidden">
            <div className="absolute top-0 right-0 p-2 opacity-5"><ShieldAlert size={60} /></div>
            <div className="text-xs font-bold text-red-600 uppercase tracking-widest mb-1">Critical Intel</div>
-           <div className="text-3xl font-bold text-red-600">{intelItems.filter(i => i.score > 7).length}</div>
-           <div className="text-sm text-slate-500">High Impact Alerts</div>
+           <div className="text-3xl font-bold text-red-600">{intelItems.length}</div>
+           <div className="text-sm text-slate-500">Active Stories</div>
         </div>
         <div className="bg-gradient-to-br from-indigo-600 to-purple-700 p-5 rounded-xl text-white shadow-md cursor-pointer hover:shadow-lg transition-shadow" onClick={() => setShowAIPanel(true)}>
            <div className="flex items-center gap-2 mb-2"><Sparkles size={18} className="text-yellow-300" /><span className="font-bold text-sm tracking-wider">AI ASSISTANT</span></div>
-           <div className="text-sm opacity-90 leading-snug">"Review the fiscal note for HB 1564?"</div>
+           <div className="text-sm opacity-90 leading-snug">"Analyze the dental pilot bill (HB 2202)?"</div>
            <div className="mt-3 text-xs font-bold bg-white/20 inline-block px-2 py-1 rounded">Click to Ask</div>
         </div>
       </div>
@@ -390,26 +336,22 @@ export default function App() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-            <h3 className="font-bold text-slate-800 flex items-center gap-2"><Calendar size={18} className="text-slate-400"/> Legislative Schedule</h3>
+            <h3 className="font-bold text-slate-800 flex items-center gap-2"><Calendar size={18} className="text-slate-400"/> Committee Schedule</h3>
             <button onClick={() => setActiveTab('committees')} className="text-xs font-bold text-blue-600 hover:underline">VIEW CALENDAR</button>
           </div>
           <div className="divide-y divide-slate-100">
-            {upcomingSchedule.map((item, idx) => (
-              <div key={idx} className="p-4 flex items-center hover:bg-slate-50 transition-colors">
-                <div className="flex flex-col items-center w-14 mr-4 border-r border-slate-100 pr-4">
-                  <span className="text-xs font-bold text-slate-400 uppercase">{item.day}</span>
-                  <span className="text-lg font-bold text-slate-800">{item.date.split(' ')[1]}</span>
-                </div>
-                <div className="flex-1">
-                  <h4 className="text-sm font-semibold text-slate-900">{item.event}</h4>
-                  <div className="flex items-center gap-3 mt-1 text-xs text-slate-500">
-                    <span className="flex items-center gap-1"><Clock size={12}/> {item.time}</span>
-                    <span className="flex items-center gap-1"><MapPin size={12}/> {item.location}</span>
-                  </div>
-                </div>
-                <span className={`text-[10px] px-2 py-1 rounded-full font-bold uppercase ${item.type === 'Committee' ? 'bg-indigo-50 text-indigo-600' : 'bg-slate-100 text-slate-600'}`}>{item.type}</span>
-              </div>
-            ))}
+            <div className="p-4 flex items-center hover:bg-slate-50">
+               <div className="flex flex-col items-center w-14 mr-4 border-r border-slate-100 pr-4">
+                  <span className="text-xs font-bold text-slate-400 uppercase">MON</span><span className="text-lg font-bold text-slate-800">12</span>
+               </div>
+               <div className="flex-1"><h4 className="text-sm font-semibold text-slate-900">Appropriations: Work Session</h4><div className="text-xs text-slate-500 flex gap-2"><span className="flex items-center gap-1"><Clock size={12}/> 3:30 PM</span><span className="flex items-center gap-1"><MapPin size={12}/> JLOB 315</span></div></div>
+            </div>
+            <div className="p-4 flex items-center hover:bg-slate-50">
+               <div className="flex flex-col items-center w-14 mr-4 border-r border-slate-100 pr-4">
+                  <span className="text-xs font-bold text-slate-400 uppercase">TUE</span><span className="text-lg font-bold text-slate-800">13</span>
+               </div>
+               <div className="flex-1"><h4 className="text-sm font-semibold text-slate-900">Finance: Public Hearing</h4><div className="text-xs text-slate-500 flex gap-2"><span className="flex items-center gap-1"><Clock size={12}/> 8:00 AM</span><span className="flex items-center gap-1"><MapPin size={12}/> JLOB 317</span></div></div>
+            </div>
           </div>
         </div>
 
@@ -419,37 +361,19 @@ export default function App() {
             <button onClick={fetchFeeds} disabled={isScanning} className="text-slate-400 hover:text-blue-600"><RefreshCw size={14} className={isScanning ? "animate-spin" : ""}/></button>
           </div>
           <div className="flex-1 overflow-y-auto max-h-[400px] p-2 space-y-2">
-            {isScanning ? (
-              <div className="p-8 text-center text-slate-400 flex flex-col items-center gap-2">
-                <Loader size={24} className="animate-spin text-blue-500"/>
-                <span className="text-xs">Scanning {FEED_CONFIG.length} sources...</span>
-              </div>
+            {intelItems.length === 0 ? (
+                <div className="p-8 text-center text-slate-400 text-xs">{isScanning ? 'Scanning...' : 'No active alerts.'}</div>
             ) : (
-              intelItems.slice(0, 10).map((item) => (
+              intelItems.slice(0, 5).map((item) => (
                 <div key={item.id} className="p-3 rounded border border-slate-100 hover:border-blue-200 hover:bg-slate-50 transition-all cursor-pointer group" onClick={() => setWarRoomItem(item)}>
                   <div className="flex justify-between items-start mb-1">
                     <span className="text-[10px] font-bold uppercase text-slate-500">{item.source}</span>
-                    {item.score > 7 && <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100 flex items-center gap-1"><ShieldAlert size={10}/> PRIORITY</span>}
+                    <span className="text-[10px] text-slate-400">{item.date}</span>
                   </div>
-                  {/* Clickable Title in Mini Feed */}
-                  <a 
-                    href={item.url} 
-                    target="_blank" 
-                    rel="noreferrer" 
-                    onClick={(e) => e.stopPropagation()} 
-                    className="text-sm font-medium text-slate-900 leading-snug group-hover:text-blue-700 hover:underline flex items-center gap-1"
-                  >
-                    {item.title} <ExternalLink size={10} className="opacity-50"/>
-                  </a>
-                  <div className="mt-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button className="text-[10px] bg-slate-900 text-white px-2 py-1 rounded font-bold flex items-center gap-1"><PenTool size={10}/> WAR ROOM</button>
-                  </div>
+                  <a href={item.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-sm font-medium text-slate-900 leading-snug group-hover:text-blue-700 hover:underline flex items-center gap-1">{item.title} <ExternalLink size={10} className="opacity-50"/></a>
                 </div>
               ))
             )}
-          </div>
-          <div className="p-2 border-t border-slate-100 text-center">
-             <button onClick={() => setActiveTab('intelligence')} className="text-xs font-bold text-blue-600 hover:text-blue-700">VIEW ALL INTEL</button>
           </div>
         </div>
       </div>
@@ -459,7 +383,7 @@ export default function App() {
   const LegislationView = () => (
     <div className="animate-in slide-in-from-right-4 duration-300">
       <div className="flex justify-between items-center mb-6">
-        <div><h2 className="text-2xl font-bold text-slate-900">Legislation Tracker</h2><p className="text-slate-500 text-sm">Managing {myBills.length} sponsored bills</p></div>
+        <div><h2 className="text-2xl font-bold text-slate-900">Legislation Tracker</h2><p className="text-slate-500 text-sm">Managing {MY_BILLS.length} sponsored bills</p></div>
         <button onClick={() => setDraftingBill(true)} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 shadow-sm"><Plus size={16}/> New Draft</button>
       </div>
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-x-auto">
@@ -474,7 +398,7 @@ export default function App() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {myBills.map((bill, idx) => (
+            {MY_BILLS.map((bill, idx) => (
               <tr key={idx} className="hover:bg-slate-50 transition-colors group">
                 <td className="px-6 py-4 font-mono font-bold text-blue-600">{bill.id}</td>
                 <td className="px-6 py-4 font-medium text-slate-900">{bill.title}</td>
@@ -497,45 +421,36 @@ export default function App() {
   const IntelligenceView = () => (
     <div className="animate-in slide-in-from-right-4 duration-300 flex flex-col h-full">
       <div className="flex justify-between items-center mb-6 shrink-0">
-        <div><h2 className="text-2xl font-bold text-slate-900">Vantage Intelligence</h2><p className="text-slate-500 text-sm">Real-time media monitoring</p></div>
+        <div><h2 className="text-2xl font-bold text-slate-900">Vantage Intelligence</h2><p className="text-slate-500 text-sm">Real-time media monitoring (Live Feed)</p></div>
         <div className="flex gap-2">
            <button onClick={fetchFeeds} className="bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2"><RefreshCw size={16} className={isScanning ? "animate-spin" : ""}/> Scan</button>
            <button onClick={() => quickAction("Draft daily briefing based on", "current intel feed")} className="bg-slate-900 text-white px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2"><FileText size={16}/> Briefing</button>
         </div>
       </div>
       
-      {/* Scan Log / Debug Area */}
       <div className="bg-slate-900 text-green-400 p-3 rounded-lg mb-4 text-xs font-mono h-32 overflow-y-auto border border-slate-700 shadow-inner">
         <div className="flex items-center gap-2 mb-2 border-b border-slate-700 pb-1 text-white font-bold"><Terminal size={12}/> SYSTEM LOG</div>
-        {scanLog.map((log, i) => (
-            <div key={i} className="opacity-80">{'>'} {log}</div>
-        ))}
+        {scanLog.map((log, i) => <div key={i} className="opacity-80">{'>'} {log}</div>)}
         {scanLog.length === 0 && <div className="opacity-50 italic">Ready to scan.</div>}
       </div>
 
       <div className="grid grid-cols-1 gap-4 flex-1 overflow-y-auto">
-        {intelItems.length === 0 && !isScanning ? (
+        {intelItems.length === 0 ? (
             <div className="text-center py-20 text-slate-400">
                 <Activity size={48} className="mx-auto mb-4 opacity-20"/>
                 <p>No intelligence found. Click "Scan" to fetch live data.</p>
             </div>
         ) : (
           intelItems.map((item) => (
-            <div key={item.id} className={`bg-white p-5 rounded-xl border shadow-sm transition-all hover:shadow-md flex flex-col md:flex-row gap-4 ${item.score > 7 ? 'border-l-4 border-l-red-500 border-y-slate-200 border-r-slate-200' : 'border-slate-200'}`}>
+            <div key={item.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm transition-all hover:shadow-md flex flex-col md:flex-row gap-4">
                <div className="flex-1">
                  <div className="flex items-center gap-3 mb-2">
                    <span className="text-[10px] font-bold uppercase bg-slate-100 px-2 py-1 rounded text-slate-600">{item.source}</span>
                    <span className="text-[10px] text-slate-400">{item.date}</span>
-                   {item.score > 7 && <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded border border-red-100 flex items-center gap-1"><ShieldAlert size={10}/> PRIORITY</span>}
                  </div>
-                 
-                 {/* Clickable Title */}
                  <h3 className="text-lg font-bold text-slate-900 mb-2">
-                   <a href={item.url} target="_blank" rel="noreferrer" className="hover:underline hover:text-blue-700 flex items-center gap-2">
-                      {item.title} <ExternalLink size={16} className="text-slate-400"/>
-                   </a>
+                   <a href={item.url} target="_blank" rel="noreferrer" className="hover:underline hover:text-blue-700 flex items-center gap-2">{item.title} <ExternalLink size={16} className="text-slate-400"/></a>
                  </h3>
-                 
                  <p className="text-sm text-slate-600">{item.summary}</p>
                </div>
                <div className="flex flex-row md:flex-col gap-2 justify-center md:border-l border-slate-100 md:pl-4 min-w-[140px]">
@@ -552,29 +467,18 @@ export default function App() {
   const CommitteeAnalysisView = () => {
     const [selectedComm, setSelectedComm] = useState('APP');
     const [analyzing, setAnalyzing] = useState(false);
-    const [inputMode, setInputMode] = useState('text'); // 'text' or 'url'
     const [docInput, setDocInput] = useState('');
     const [analysisResult, setAnalysisResult] = useState('');
 
-    const committees = {
-      APP: { name: "Appropriations" },
-      FIN: { name: "Finance" },
-      ELHS: { name: "Early Learning & Human Svcs" },
-      TEDV: { name: "Tech & Econ Dev" }
-    };
+    const committees = MY_COMMITTEES;
 
     const handleAnalysis = async () => {
        if (!docInput.trim()) return;
        setAnalyzing(true);
-       
-       const prompt = `Analyze this legislative document content:
-       
-       "${docInput.substring(0, 5000)}"
-       
+       const prompt = `Analyze this legislative document content: "${docInput.substring(0, 5000)}"
        1. Executive Summary (2 sentences).
        2. Fiscal Risks for WA State.
        3. 3 Strategic Questions for the Committee Hearing.`;
-       
        const response = await callGemini(prompt, 'policy');
        setAnalysisResult(response || "Analysis failed. Please verify API key.");
        setAnalyzing(false);
@@ -586,59 +490,34 @@ export default function App() {
           <div><h2 className="text-2xl font-bold text-slate-900">Committee Analysis Tool</h2><p className="text-slate-500 text-sm">Deep dive analysis on bills and reports</p></div>
           <div className="flex bg-white rounded-lg border border-slate-300 p-1">
              {Object.entries(committees).map(([key, data]) => (
-                <button 
-                  key={key} 
-                  onClick={() => setSelectedComm(key)}
-                  className={`px-3 py-1.5 text-xs font-bold rounded transition-colors ${selectedComm === key ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
-                >
-                  {key}
-                </button>
+                <button key={key} onClick={() => setSelectedComm(key)} className={`px-3 py-1.5 text-xs font-bold rounded transition-colors ${selectedComm === key ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>{data.name}</button>
              ))}
           </div>
         </div>
-
         <div className="flex-1 flex gap-6 overflow-hidden">
-           {/* Left: Input Area */}
            <div className="w-full md:w-1/3 flex flex-col bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-4 border-b border-slate-100 bg-slate-50/50">
                  <h3 className="font-bold text-slate-700 text-sm uppercase tracking-wider mb-2">Document Input</h3>
                  <p className="text-xs text-slate-500">Paste the text of a bill, amendment, or fiscal note below.</p>
               </div>
               <div className="flex-1 p-4 flex flex-col">
-                 <textarea 
-                    className="flex-1 w-full border border-slate-200 rounded-lg p-3 text-xs font-mono focus:outline-none focus:border-blue-500 resize-none"
-                    placeholder="Paste document text here..."
-                    value={docInput}
-                    onChange={(e) => setDocInput(e.target.value)}
-                 />
-                 <button 
-                    onClick={handleAnalysis}
-                    disabled={analyzing || !docInput}
-                    className="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
-                 >
-                    {analyzing ? <Loader size={16} className="animate-spin"/> : <Sparkles size={16}/>}
-                    {analyzing ? 'Analyzing...' : 'Run Analysis'}
+                 <textarea className="flex-1 w-full border border-slate-200 rounded-lg p-3 text-xs font-mono focus:outline-none focus:border-blue-500 resize-none" placeholder="Paste document text here..." value={docInput} onChange={(e) => setDocInput(e.target.value)} />
+                 <button onClick={handleAnalysis} disabled={analyzing || !docInput} className="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-colors disabled:opacity-50">
+                    {analyzing ? <Loader size={16} className="animate-spin"/> : <Sparkles size={16}/>} {analyzing ? 'Analyzing...' : 'Run Analysis'}
                  </button>
               </div>
            </div>
-
-           {/* Right: Analysis Results */}
            <div className="flex-1 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200 p-6 overflow-y-auto relative">
               {!analysisResult ? (
                  <div className="h-full flex flex-col items-center justify-center text-slate-400">
-                    <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mb-4 shadow-sm border border-slate-200">
-                       <FileText size={32} className="text-slate-300"/>
-                    </div>
+                    <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mb-4 shadow-sm border border-slate-200"><FileText size={32} className="text-slate-300"/></div>
                     <p className="font-bold">Ready to Analyze</p>
                     <p className="text-sm mt-1">Paste text on the left to generate insights.</p>
                  </div>
               ) : (
                  <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden animate-in fade-in slide-in-from-bottom-4">
                     <div className="p-4 border-b border-slate-100 bg-slate-900 text-white flex justify-between items-center">
-                       <div className="flex items-center gap-2">
-                          <Sparkles size={16} className="text-yellow-300"/>
-                          <span className="font-bold text-sm">Vantage Analysis</span>
-                       </div>
+                       <div className="flex items-center gap-2"><Sparkles size={16} className="text-yellow-300"/><span className="font-bold text-sm">Vantage Analysis</span></div>
                        <button onClick={() => setAnalysisResult('')} className="text-slate-400 hover:text-white"><X size={16}/></button>
                     </div>
                     <div className="p-6">
@@ -658,62 +537,21 @@ export default function App() {
 
   const SettingsView = () => (
     <div className="animate-in slide-in-from-right-4 duration-300 max-w-2xl mx-auto">
-      <div className="mb-8">
-        <h2 className="text-2xl font-bold text-slate-900">System Settings</h2>
-        <p className="text-slate-500 text-sm">Configure Vantage preferences and integrations.</p>
-      </div>
-      
+      <div className="mb-8"><h2 className="text-2xl font-bold text-slate-900">System Settings</h2><p className="text-slate-500 text-sm">Configure Vantage preferences.</p></div>
       <div className="space-y-6">
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-          <h3 className="text-lg font-bold text-slate-800 mb-4 border-b border-slate-100 pb-2">Profile & Identity</h3>
+          <h3 className="text-lg font-bold text-slate-800 mb-4 border-b border-slate-100 pb-2">Profile</h3>
           <div className="flex items-center gap-4 mb-4">
              <div className="w-16 h-16 bg-slate-800 rounded-full text-white flex items-center justify-center text-xl font-bold">JP</div>
-             <div>
-                <div className="font-bold text-slate-900">Rep. Josh Penner</div>
-                <div className="text-sm text-slate-500">31st Legislative District</div>
-             </div>
-             <button className="ml-auto text-sm text-blue-600 font-bold border border-blue-200 px-3 py-1.5 rounded hover:bg-blue-50">Edit</button>
+             <div><div className="font-bold text-slate-900">Rep. Josh Penner</div><div className="text-sm text-slate-500">31st Legislative District</div></div>
           </div>
         </div>
-
-        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-          <h3 className="text-lg font-bold text-slate-800 mb-4 border-b border-slate-100 pb-2">Notifications</h3>
-          <div className="space-y-4">
-             <div className="flex items-center justify-between">
-                <div>
-                   <div className="text-sm font-semibold text-slate-800">Critical Intel Alerts</div>
-                   <div className="text-xs text-slate-500">Notify when Vantage score exceeds 8/10</div>
-                </div>
-                <ToggleRight className="text-green-600 w-10 h-10 cursor-pointer"/>
-             </div>
-             <div className="flex items-center justify-between">
-                <div>
-                   <div className="text-sm font-semibold text-slate-800">Committee Agenda Changes</div>
-                   <div className="text-xs text-slate-500">Notify of last-minute additions</div>
-                </div>
-                <ToggleRight className="text-green-600 w-10 h-10 cursor-pointer"/>
-             </div>
-             <div className="flex items-center justify-between">
-                <div>
-                   <div className="text-sm font-semibold text-slate-800">Daily Briefing Email</div>
-                   <div className="text-xs text-slate-500">Send summary at 7:00 AM</div>
-                </div>
-                <ToggleLeft className="text-slate-300 w-10 h-10 cursor-pointer"/>
-             </div>
-          </div>
-        </div>
-
-        <button className="w-full py-3 border border-red-200 text-red-600 font-bold rounded-lg hover:bg-red-50 flex items-center justify-center gap-2">
-           <LogOut size={16}/> Sign Out of Vantage
-        </button>
       </div>
     </div>
   );
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
-      
-      {/* --- MODALS --- */}
       {viewingCitation && <DocumentViewer citation={viewingCitation} onClose={() => setViewingCitation(null)} />}
       {warRoomItem && <WarRoomModal item={warRoomItem} onClose={() => setWarRoomItem(null)} />}
       {draftingBill && (
@@ -729,64 +567,37 @@ export default function App() {
         </div>
       )}
 
-      {/* --- SIDEBAR --- */}
       <aside className="w-20 md:w-64 bg-slate-900 text-slate-300 flex flex-col shadow-xl z-20 flex-shrink-0 transition-all duration-300">
         <div className="p-4 md:p-6 border-b border-slate-800 flex items-center gap-3">
           <div className="w-8 h-8 rounded bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white font-bold shadow-lg shadow-blue-900/50">V</div>
-          <div className="hidden md:block">
-            <h1 className="text-white font-bold tracking-wider">VANTAGE</h1>
-            <p className="text-[10px] text-slate-500 uppercase tracking-widest">Command OS v2.0</p>
-          </div>
+          <div className="hidden md:block"><h1 className="text-white font-bold tracking-wider">VANTAGE</h1><p className="text-[10px] text-slate-500 uppercase tracking-widest">Command OS v2.0</p></div>
         </div>
-        
         <nav className="flex-1 py-6 space-y-1 overflow-y-auto">
-          {[
-            { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-            { id: 'legislation', icon: FileText, label: 'Legislation' },
-            { id: 'committees', icon: Users, label: 'Committees' },
-            { id: 'intelligence', icon: Globe, label: 'Intelligence' },
-          ].map(item => (
+          {[{ id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' }, { id: 'legislation', icon: FileText, label: 'Legislation' }, { id: 'committees', icon: Users, label: 'Committees' }, { id: 'intelligence', icon: Globe, label: 'Intelligence' }].map(item => (
             <button key={item.id} onClick={() => setActiveTab(item.id)} className={`w-full flex items-center gap-4 px-4 md:px-6 py-3 transition-all ${activeTab === item.id ? 'bg-slate-800 text-white border-l-4 border-blue-500' : 'hover:bg-slate-800/50 hover:text-white border-l-4 border-transparent'}`}>
-              <item.icon size={20} className={activeTab === item.id ? "text-blue-400" : "text-slate-500"} />
-              <span className="hidden md:block font-medium">{item.label}</span>
+              <item.icon size={20} className={activeTab === item.id ? "text-blue-400" : "text-slate-500"} /><span className="hidden md:block font-medium">{item.label}</span>
             </button>
           ))}
           <div className="my-4 border-t border-slate-800 pt-4 px-4 md:px-6">
              <div className="text-[10px] font-bold uppercase text-slate-600 mb-2 hidden md:block">System</div>
-             <button onClick={() => setActiveTab('settings')} className={`w-full flex items-center gap-4 py-2 hover:text-white transition-colors ${activeTab === 'settings' ? 'text-white' : ''}`}>
-               <Settings size={18}/>
-               <span className="hidden md:block">Settings</span>
-             </button>
+             <button onClick={() => setActiveTab('settings')} className={`w-full flex items-center gap-4 py-2 hover:text-white transition-colors ${activeTab === 'settings' ? 'text-white' : ''}`}><Settings size={18}/><span className="hidden md:block">Settings</span></button>
           </div>
         </nav>
-
         <div className="p-4 bg-slate-950/50 border-t border-slate-800">
-           <button onClick={() => setShowAIPanel(!showAIPanel)} className="w-full bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white p-3 rounded-lg flex items-center justify-center gap-2 font-bold shadow-lg transition-all">
-             <Sparkles size={18} className="text-yellow-300" />
-             <span className="hidden md:block">Vantage Assistant</span>
-           </button>
+           <button onClick={() => setShowAIPanel(!showAIPanel)} className="w-full bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white p-3 rounded-lg flex items-center justify-center gap-2 font-bold shadow-lg transition-all"><Sparkles size={18} className="text-yellow-300" /><span className="hidden md:block">Vantage Assistant</span></button>
         </div>
       </aside>
 
-      {/* --- MAIN CONTENT --- */}
       <main className="flex-1 flex flex-col relative overflow-hidden">
-        {/* Header */}
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shadow-sm z-10 flex-shrink-0">
-          <h2 className="text-lg font-bold text-slate-800 capitalize flex items-center gap-2">
-            {activeTab} 
-            {activeTab === 'intelligence' && <span className="bg-red-100 text-red-600 text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider">Live Feed</span>}
-          </h2>
+          <h2 className="text-lg font-bold text-slate-800 capitalize flex items-center gap-2">{activeTab} {activeTab === 'intelligence' && <span className="bg-red-100 text-red-600 text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider">Live Feed</span>}</h2>
           <div className="flex items-center gap-4">
-             <div className="relative hidden md:block">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16}/>
-                <input className="pl-9 pr-4 py-2 bg-slate-100 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-64 transition-all" placeholder="Search database..." />
-             </div>
+             <div className="relative hidden md:block"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16}/><input className="pl-9 pr-4 py-2 bg-slate-100 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-64 transition-all" placeholder="Search database..." /></div>
              <button className="relative p-2 text-slate-500 hover:bg-slate-100 rounded-full"><Bell size={20}/><span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span></button>
              <div className="w-8 h-8 bg-slate-800 rounded-full text-white flex items-center justify-center text-xs font-bold">JP</div>
           </div>
         </header>
 
-        {/* Dynamic Content Area */}
         <div className="flex-1 overflow-y-auto p-4 md:p-8 bg-slate-50">
            {activeTab === 'dashboard' && <DashboardHome />}
            {activeTab === 'legislation' && <LegislationView />}
@@ -795,13 +606,11 @@ export default function App() {
            {activeTab === 'settings' && <SettingsView />}
         </div>
 
-        {/* --- AI ASSISTANT PANEL --- */}
         <div className={`fixed inset-y-0 right-0 w-full md:w-[400px] bg-white shadow-2xl transform transition-transform duration-300 z-50 flex flex-col border-l border-slate-200 ${showAIPanel ? 'translate-x-0' : 'translate-x-full'}`}>
           <div className="p-4 bg-slate-900 text-white flex justify-between items-center shadow-md">
             <div className="flex items-center gap-2 font-bold"><Sparkles size={18} className="text-yellow-400" /> Vantage Assistant</div>
             <button onClick={() => setShowAIPanel(false)} className="hover:bg-white/20 p-1 rounded-full"><X size={20} /></button>
           </div>
-          
           <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50">
              {chatHistory.map((msg, i) => (
                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -813,13 +622,7 @@ export default function App() {
              {isGenerating && <div className="flex items-center gap-2 text-slate-500 text-xs font-bold p-2"><Loader size={14} className="animate-spin"/> PROCESSING REQUEST...</div>}
              <div ref={chatEndRef} />
           </div>
-
           <div className="p-4 bg-white border-t border-slate-200">
-             <div className="flex gap-2 mb-2 overflow-x-auto pb-2 scrollbar-hide">
-               {['Summarize today\'s intel', 'Draft tweet re: HB 1564', 'Find fiscal risks'].map(p => (
-                 <button key={p} onClick={() => setAiPrompt(p)} className="whitespace-nowrap px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs rounded-full font-medium transition-colors">{p}</button>
-               ))}
-             </div>
              <form onSubmit={handleAIChat} className="relative">
                <input value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} placeholder="Ask Vantage..." className="w-full pl-4 pr-12 py-3 bg-slate-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-sm"/>
                <button type="submit" disabled={!aiPrompt.trim() || isGenerating} className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"><Send size={16}/></button>
