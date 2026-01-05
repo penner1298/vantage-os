@@ -139,6 +139,29 @@ const fetchProxyContent = async (targetUrl) => {
   }
 };
 
+// Utility to force download a file to the user's machine
+const downloadFileToDisk = async (url, filename) => {
+    try {
+        // Use corsproxy to get the raw blob data
+        const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
+        if(!response.ok) throw new Error("Download fetch failed");
+        
+        const blob = await response.blob();
+        const link = document.createElement('a');
+        link.href = window.URL.createObjectURL(blob);
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return true;
+    } catch (e) {
+        console.error("Auto-download failed:", e);
+        // Fallback: Open in new tab so user can save manually
+        window.open(url, '_blank');
+        return false;
+    }
+};
+
 /* --- 2. FIREBASE CONFIGURATION --- */
 let firebaseConfig = {};
 
@@ -302,10 +325,6 @@ const DocumentViewer = ({ docData, onClose }) => {
 
 // New Modal to Manage and Scan Bill Documents
 const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
-  // ... (Keeping existing modal logic for direct scan management if needed)
-  // But moving the main interaction to the expandable row.
-  // This component can still exist for explicit full-screen management.
-  // Reusing existing logic...
   const [isScanning, setIsScanning] = useState(false);
   const [importingId, setImportingId] = useState(null);
   const [documents, setDocuments] = useState(bill.documents || []);
@@ -313,7 +332,6 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedDocIds, setSelectedDocIds] = useState(new Set());
 
-  // Logic to calculate session number from year (1956 baseline)
   const getSessionNumber = (year) => {
     const yr = parseInt(year);
     if (isNaN(yr)) return 69; 
@@ -340,7 +358,9 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
           if(!uniqueDocs.find(ud => ud.url === d.url)) {
             uniqueDocs.push({...d, isNew: true});
             addedCount++;
+            return true;
           }
+          return false;
       };
 
         // 1. Fetch Fiscal Note Page
@@ -366,25 +386,11 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
                     foundFn = true;
                 }
                 if (!foundFn) {
-                    addDoc({
-                        id: `fn-search-${number}`,
-                        title: `Fiscal Note Search Page`,
-                        type: "Fiscal Note Portal",
-                        url: fiscalNoteUrl,
-                        dateFound: new Date().toLocaleDateString(),
-                        imported: false
-                    });
+                    // Fallback to search page if no direct PDF found
                 }
             }
         } catch(e) {
-             addDoc({
-                id: `fn-search-${number}`,
-                title: `Fiscal Note Search Page`,
-                type: "Fiscal Note Portal",
-                url: fiscalNoteUrl,
-                dateFound: new Date().toLocaleDateString(),
-                imported: false
-            });
+            console.warn("Fiscal note scan issue", e);
         }
 
       // 2. Fetch Bill Summary Page
@@ -423,7 +429,50 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
     }
   };
 
-  // ... (Keeping imports and other logic same as before, simplified for brevity in this view as it's duped logic)
+  const importDocContent = async (docIndex) => {
+    const docToImport = documents[docIndex];
+    setImportingId(docToImport.id);
+    setStatusMsg(`Importing ${docToImport.title}...`);
+    
+    // 1. Download File to User's Machine
+    downloadFileToDisk(docToImport.url, docToImport.title + ".pdf");
+
+    // 2. Fetch Content for Database (AI Analysis)
+    try {
+      const contents = await fetchProxyContent(docToImport.url);
+      
+      // If it's a binary PDF, the text proxy might give us garbage or nothing useful for simple string storage
+      // So we mainly rely on the download. 
+      // However, if it's HTML, we save it.
+      let cleanText = "";
+      if (docToImport.url.endsWith('.htm') || docToImport.url.endsWith('.html') || (typeof contents === 'string' && contents.includes('<html'))) {
+           const parser = new DOMParser();
+           const dom = parser.parseFromString(contents, 'text/html');
+           cleanText = dom.body.innerText;
+      } else {
+          // It's likely a PDF binary. We flag it as imported so we know we have the file.
+          // We don't store binary in Firestore.
+          cleanText = "[PDF Binary Downloaded]";
+      }
+
+       const updatedDocs = [...documents];
+       updatedDocs[docIndex] = { 
+         ...docToImport, 
+         content: cleanText, 
+         imported: true, 
+         importedDate: new Date().toLocaleDateString() 
+       };
+       setDocuments(updatedDocs);
+       setStatusMsg("Imported & Downloaded.");
+       // Auto-save
+       onSave({ ...bill, documents: updatedDocs });
+    } catch(e) {
+        setStatusMsg("Download triggered, but DB sync failed.");
+    } finally {
+        setImportingId(null);
+    }
+  };
+
   const toggleSelect = (id) => {
     const newSet = new Set(selectedDocIds);
     if (newSet.has(id)) newSet.delete(id);
@@ -436,53 +485,104 @@ const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
     onClose();
   };
 
-  // Filter documents
+  // Filter documents for display
   const filteredDocs = documents.filter(d => 
      d.title.toLowerCase().includes(searchTerm.toLowerCase()) || 
      d.type.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  // Auto-scan on open if empty
-  useEffect(() => {
-     if(documents.length === 0 && !isScanning) {
-         scanBillDocs();
-     }
-  }, []);
-
   return (
     <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-       {/* Re-using existing modal structure */}
-       <div className="bg-white p-6 rounded-xl max-w-3xl w-full shadow-2xl flex flex-col max-h-[85vh]">
-         {/* ... (Header & Toolbar logic same as before, updated with selections) ... */}
-         {/* Simplified here to focus on the request: "dropdown option so I can see all sub docs" */}
-         {/* I will implement this logic primarily in the LegislationView component below */}
-         <div className="flex justify-between items-start mb-4">
-             <div><h3 className="text-xl font-bold text-slate-900">Bill Resources</h3><p className="text-sm text-slate-500">{bill.id}</p></div>
-             <button onClick={onClose}><X size={24} className="text-slate-400 hover:text-slate-600"/></button>
-         </div>
-         {/* ... */}
-         <div className="flex-1 overflow-y-auto p-1 border-t border-b border-slate-100 my-2">
-             {filteredDocs.map((doc, idx) => (
-                <div key={idx} className="flex items-center gap-3 p-2 hover:bg-slate-50 border-b border-slate-50 last:border-0">
+      <div className="bg-white p-6 rounded-xl max-w-3xl w-full shadow-2xl flex flex-col max-h-[85vh]">
+        <div className="flex justify-between items-start mb-4">
+          <div>
+            <h3 className="text-xl font-bold text-slate-900 flex items-center gap-2"><FolderOpen size={24} className="text-blue-600"/> Bill Resources</h3>
+            <p className="text-sm text-slate-500">{bill.id}: {bill.title}</p>
+          </div>
+          <button onClick={onClose}><X size={24} className="text-slate-400 hover:text-slate-600"/></button>
+        </div>
+
+        {/* Toolbar */}
+        <div className="flex flex-col gap-2 mb-4 bg-slate-50 p-3 rounded-lg border border-slate-200">
+           <div className="flex items-center justify-between">
+              <div className="text-xs font-mono text-slate-600 truncate max-w-xs">{statusMsg || "Ready to scan."}</div>
+              <button onClick={scanBillDocs} disabled={isScanning} className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-bold transition-colors">
+                {isScanning ? <Loader size={14} className="animate-spin"/> : <RefreshCw size={14}/>}
+                {isScanning ? "Scanning..." : "Scan Web"}
+              </button>
+           </div>
+           <div className="flex items-center gap-2 mt-2">
+              <div className="relative flex-1">
+                 <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400"/>
+                 <input 
+                    className="w-full pl-7 pr-2 py-1.5 text-sm border rounded" 
+                    placeholder="Search documents..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                 />
+              </div>
+              <button 
+                onClick={() => onAnalyzeSelected(filteredDocs.filter(d => selectedDocIds.has(d.id)))}
+                disabled={selectedDocIds.size === 0}
+                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-bold disabled:opacity-50 flex items-center gap-1"
+              >
+                <Sparkles size={14}/> Analyze Selected ({selectedDocIds.size})
+              </button>
+           </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-1">
+          {documents.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-40 text-slate-400 border-2 border-dashed border-slate-200 rounded-lg">
+               <File size={32} className="mb-2 opacity-50"/>
+               <p className="text-sm">No documents tracked.</p>
+               <p className="text-xs">Click 'Scan Web' to find files.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {filteredDocs.map((doc, idx) => (
+                <div key={idx} className={`bg-white p-3 rounded border flex justify-between items-center transition-all shadow-sm ${selectedDocIds.has(doc.id) ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-blue-300'}`}>
+                  <div className="flex items-center gap-3 overflow-hidden">
                     <button onClick={() => toggleSelect(doc.id)} className="text-slate-400 hover:text-blue-600">
                        {selectedDocIds.has(doc.id) ? <CheckSquare size={18} className="text-blue-600"/> : <Square size={18}/>}
                     </button>
-                    <div className="flex-1 truncate">
-                        <div className="text-sm font-medium text-slate-800">{doc.title}</div>
-                        <div className="text-xs text-slate-500">{doc.type} • {doc.dateFound}</div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <span className="truncate">{doc.title}</span>
+                        {doc.isNew && <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 rounded-full font-bold shrink-0">NEW</span>}
+                      </div>
+                      <div className="text-xs text-slate-500 flex gap-2 items-center">
+                         <span className="bg-slate-100 px-1 rounded">{doc.type}</span>
+                         <span className="truncate max-w-[200px] text-slate-400">{doc.url}</span>
+                      </div>
                     </div>
-                    <a href={doc.url} target="_blank" rel="noreferrer" className="p-1 text-blue-600 hover:bg-blue-50 rounded"><ExternalLink size={16}/></a>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                     {/* Import Button */}
+                     {!doc.imported && (
+                       <button 
+                         onClick={() => importDocContent(idx)} 
+                         disabled={importingId !== null}
+                         className="p-1.5 text-blue-600 hover:bg-blue-50 rounded border border-blue-100" 
+                         title="Import & Download"
+                       >
+                         {importingId === doc.id ? <Loader size={16} className="animate-spin"/> : <Download size={16}/>}
+                       </button>
+                     )}
+                     
+                     {/* View Button */}
+                     <a href={doc.url} target="_blank" rel="noreferrer" className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded" title="Open External PDF"><ExternalLink size={16}/></a>
+                  </div>
                 </div>
-             ))}
-         </div>
-         <div className="flex justify-between items-center pt-2">
-             <button onClick={scanBillDocs} disabled={isScanning} className="text-xs font-bold text-slate-500 flex items-center gap-1 hover:text-slate-800">{isScanning ? <Loader size={12} className="animate-spin"/> : <RefreshCw size={12}/>} Refresh Docs</button>
-             <div className="flex gap-2">
-                 <button onClick={() => onAnalyzeSelected(filteredDocs.filter(d => selectedDocIds.has(d.id)))} disabled={selectedDocIds.size === 0} className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-bold disabled:opacity-50 flex items-center gap-1"><Sparkles size={14}/> Analyze Selected</button>
-                 <button onClick={saveAndClose} className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-bold">Save</button>
-             </div>
-         </div>
-       </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end pt-4 border-t border-slate-100">
+           <button onClick={saveAndClose} className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-sm shadow-sm">Save & Close</button>
+        </div>
+      </div>
     </div>
   );
 };
@@ -713,6 +813,7 @@ export default function App() {
       ? bills.map(b => b.id === billData.id ? billData : b)
       : [billData, ...bills];
     
+    // If updating from Doc Manager, we might not have editingBill set, so ensure update
     const billIndex = bills.findIndex(b => b.id === billData.id);
     let updatedStateBills;
     if (billIndex >= 0) {
@@ -775,7 +876,7 @@ export default function App() {
      
      selectedDocs.forEach(d => {
          prompt += `\n\n--- DOCUMENT: ${d.title} ---`;
-         if(d.content && d.content.length > 50) {
+         if(d.content && d.content.length > 50 && d.content !== "[PDF Binary Downloaded]") {
              // Truncate content to avoid token limits
              prompt += `\n[CONTENT SNIPPET]:\n${d.content.substring(0, 4000)}...`;
          } else {
@@ -788,7 +889,7 @@ export default function App() {
      2. Identify any specific fiscal impacts mentioned in the Fiscal Notes.
      3. Highlight any controversial sections or potential opposition points.
      
-     If you only have the URL and not the content, please generate a specific question list I can use to interrogate the document manually.`;
+     If you only have the URL and not the content (e.g. PDF Binary), please provide a specific prompt I can use to manually analyze it after reading the file myself.`;
      
      setShowAIPanel(true);
      setAiPrompt(prompt);
