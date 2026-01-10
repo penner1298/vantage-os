@@ -568,8 +568,9 @@ export default function App() {
       }
       setIsScanning(true);
       try {
-          // Send request to user's Google Apps Script Web App
-          const res = await fetch(GOOGLE_SCRIPT_URL, {
+          // Send request to user's Google Apps Script Web App (POST via proxy)
+          const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(GOOGLE_SCRIPT_URL)}`;
+          const res = await fetch(proxyUrl, {
               method: 'POST',
               body: JSON.stringify({ action: "run_all", secret: GOOGLE_SCRIPT_SECRET })
           });
@@ -581,7 +582,18 @@ export default function App() {
               alert("Tool Error: " + json.message);
           }
       } catch(e) {
-          alert("Connection to Drive Tool failed. Check URL and CORS.");
+          // Fallback to no-cors mode if proxy fails (blind trigger)
+          try {
+              await fetch(GOOGLE_SCRIPT_URL, {
+                  method: 'POST',
+                  mode: 'no-cors',
+                  headers: { 'Content-Type': 'text/plain' },
+                  body: JSON.stringify({ action: "run_all", secret: GOOGLE_SCRIPT_SECRET })
+              });
+              alert("Drive Tool triggered (Blind Mode). Check your sheet in a few minutes.");
+          } catch(err) {
+              alert("Connection failed completely. Check console.");
+          }
       }
       setIsScanning(false);
   };
@@ -660,6 +672,7 @@ export default function App() {
         </header>
 
         <div className="flex-1 overflow-y-auto p-8">
+            {/* LEGISLATION TAB */}
             {activeTab === 'legislation' && (
                 <div className="space-y-4">
                     <div className="flex justify-between items-center">
