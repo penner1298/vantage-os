@@ -73,7 +73,7 @@ import {
 /* --- 0. CONFIGURATION & UTILITIES --- */
 
 // PASTE YOUR GOOGLE WEB APP URL HERE
-const GOOGLE_SCRIPT_URL = ""; 
+const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby_nACVi5RzeOjqGtbelPnrDmX9gE270omfN1zqsLZAVNOxaJ1VPdCF7DWgQbMQ4kngFw/exec"; 
 // PASTE YOUR SECRET HERE
 const GOOGLE_SCRIPT_SECRET = "my-secret-password";
 
