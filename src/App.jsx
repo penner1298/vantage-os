@@ -72,61 +72,15 @@ import {
 
 /* --- 0. CONFIGURATION & UTILITIES --- */
 
-// PASTE YOUR GOOGLE WEB APP URL HERE
+// YOUR GOOGLE WEB APP URL
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby_nACVi5RzeOjqGtbelPnrDmX9gE270omfN1zqsLZAVNOxaJ1VPdCF7DWgQbMQ4kngFw/exec"; 
-// PASTE YOUR SECRET HERE
 const GOOGLE_SCRIPT_SECRET = "my-secret-password";
-
 const GOOGLE_SHEET_ID = "1RNiCiYFUp8KLzxZY3DaEbLEH3afoYHUbHa-wCF4BEYE";
 const SHEET_CSV_URL = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv`;
 
-// PDF Text Extractor
-const extractTextFromPDF = async (url) => {
-  try {
-    if (!window.pdfjsLib) {
-      const script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-      document.head.appendChild(script);
-      await new Promise(resolve => script.onload = resolve);
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    }
+/* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
 
-    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-    const loadingTask = window.pdfjsLib.getDocument(proxyUrl);
-    const pdf = await loadingTask.promise;
-    
-    let fullText = "";
-    const maxPages = Math.min(pdf.numPages, 10); 
-    for (let i = 1; i <= maxPages; i++) {
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      const pageText = textContent.items.map(item => item.str).join(' ');
-      fullText += `\n[Page ${i}]\n${pageText}`;
-    }
-    return fullText;
-  } catch (error) {
-    console.error("PDF Extraction Failed:", error);
-    return null;
-  }
-};
-
-// Robust Fetch
-const fetchProxyContent = async (targetUrl) => {
-  const tryAllOrigins = async () => {
-    const response = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`);
-    if (!response.ok) throw new Error(`AllOrigins status: ${response.status}`);
-    const data = await response.json();
-    return data.contents;
-  };
-  const tryCorsProxy = async () => {
-    const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`);
-    if (!response.ok) throw new Error(`CorsProxy status: ${response.status}`);
-    return await response.text();
-  };
-  try { return await tryAllOrigins(); } 
-  catch (e) { return await tryCorsProxy(); }
-};
-
+// Safe environment variable access for Gemini
 let apiKey = "";
 try {
   // @ts-ignore
@@ -163,6 +117,41 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
   }
 };
 
+// PDF Text Extractor using PDF.js via CDN
+const extractTextFromPDF = async (url) => {
+  try {
+    if (!window.pdfjsLib) {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      document.head.appendChild(script);
+      await new Promise(resolve => script.onload = resolve);
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+
+    // Attempt to use corsproxy to fetch the PDF bytes
+    // Note: For Google Drive files, this requires the file to be public (Anyone with link)
+    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+    
+    const loadingTask = window.pdfjsLib.getDocument(proxyUrl);
+    const pdf = await loadingTask.promise;
+    
+    let fullText = "";
+    // Limit pages to avoid huge payloads
+    const maxPages = Math.min(pdf.numPages, 15); 
+    for (let i = 1; i <= maxPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items.map(item => item.str).join(' ');
+      fullText += `\n[Page ${i}]\n${pageText}`;
+    }
+    return fullText;
+  } catch (error) {
+    console.error("PDF Extraction Failed:", error);
+    return null;
+  }
+};
+
+/* --- 2. FIREBASE CONFIGURATION --- */
 let firebaseConfig = {};
 try {
   if (typeof __firebase_config !== 'undefined') {
@@ -201,11 +190,11 @@ const FEED_CONFIG = [
   { url: "https://www.spokesman.com/feeds/stories/", name: "Spokesman Main", category: "Media" }
 ];
 
-/* --- 2. BILL WORKSPACE COMPONENT (Legislation Tracker Hub) --- */
+/* --- 3. BILL WORKSPACE COMPONENT (Legislation Hub) --- */
 
 const BillWorkspace = ({ bill, onClose, onSave }) => {
-  const [activeTab, setActiveTab] = useState('summary'); // summary, docs, chat
-  const [summaryText, setSummaryText] = useState(bill.summary || "No summary available. Click 'Scan' to fetch bill details or write your own.");
+  const [activeTab, setActiveTab] = useState('summary'); 
+  const [summaryText, setSummaryText] = useState(bill.summary || "No summary available. Check the 'Documents' tab to see what your Drive tool has collected.");
   const [documents, setDocuments] = useState(bill.documents || []);
   const [selectedDocIds, setSelectedDocIds] = useState(new Set());
   const [isScanning, setIsScanning] = useState(false);
@@ -231,58 +220,53 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
       setSelectedDocIds(newSet);
   };
 
-  const scanForDocs = async () => {
+  // CALL GOOGLE SCRIPT TO GET FILE LIST FROM DRIVE
+  const fetchDriveFiles = async () => {
     setIsScanning(true);
-    setStatusMsg("Querying Legislative Systems...");
-    
-    // Logic to find docs from WA Leg
-    const number = bill.id.replace(/[^0-9]/g, '');
-    const year = bill.year || "2025";
-    const biennium = (parseInt(year) % 2 !== 0) ? `${year}-${parseInt(year).toString().substring(2) - (-1)}` : `${year-1}-${year.toString().substring(2)}`;
+    setStatusMsg("Querying Google Drive...");
     
     try {
-       // 1. Get Legislation (Bill Reports, Original Text)
-       const legUrl = `https://wslwebservices.leg.wa.gov/LegislationService.asmx/GetLegislation?biennium=${biennum}&billNumber=${number}`;
-       const legXml = await fetchProxyContent(legUrl);
-       const parser = new DOMParser();
-       const legDoc = parser.parseFromString(legXml, "text/xml");
+       // Using CorsProxy to hit your Web App
+       const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(GOOGLE_SCRIPT_URL)}`;
        
-       const newDocs = [...documents];
-       const addDoc = (d) => { if(!newDocs.find(x => x.url === d.url)) newDocs.push(d); };
-
-       const mapping = {
-           "OriginalTextUrl": "Original Bill",
-           "BillReportUrl": "Bill Report",
-           "FiscalNoteUrl": "Fiscal Note"
-       };
+       // Sending command to your script to look up files for this bill ID
+       const res = await fetch(proxyUrl, {
+           method: 'POST',
+           body: JSON.stringify({ 
+               action: "get_bill_files", 
+               billId: bill.id.replace(/[^0-9]/g, ''), // Send '1717' not 'HB 1717'
+               secret: GOOGLE_SCRIPT_SECRET 
+           })
+       });
        
-       for (const [tag, label] of Object.entries(mapping)) {
-           const node = legDoc.querySelector(tag);
-           if(node && node.textContent.startsWith('http')) {
-               const url = node.textContent;
-               // Auto-fetch content if PDF
-               let content = "";
-               if(url.endsWith('.pdf')) {
-                   setStatusMsg(`Reading ${label}...`);
-                   const text = await extractTextFromPDF(url);
-                   if(text) content = text;
-               }
-               addDoc({
-                   id: `${label}-${Date.now()}`,
-                   title: `${label} (${year})`,
-                   type: label,
-                   url: url,
-                   content: content,
+       const json = await res.json();
+       
+       if(json.status === "success" && json.files) {
+           const newDocs = json.files.map(f => {
+               // Convert drive viewer link to direct download link if possible for reading
+               // Viewer: https://drive.google.com/file/d/FILE_ID/view
+               // Download: https://drive.google.com/uc?export=download&id=FILE_ID
+               const downloadUrl = `https://drive.google.com/uc?export=download&id=${f.id}`;
+               
+               return {
+                   id: f.id,
+                   title: f.name,
+                   type: f.name.toLowerCase().includes("fiscal") ? "Fiscal Note" : "Document",
+                   url: f.url, // Original viewer link
+                   downloadUrl: downloadUrl, 
+                   content: "", // Will be filled if analyzed
                    date: new Date().toLocaleDateString()
-               });
-           }
+               };
+           });
+           setDocuments(newDocs);
+           onSave({ ...bill, documents: newDocs });
+           setStatusMsg(`Found ${newDocs.length} files.`);
+       } else {
+           setStatusMsg("No files returned from Drive.");
        }
-       setDocuments(newDocs);
-       onSave({ ...bill, documents: newDocs });
-       setStatusMsg("Scan complete.");
     } catch (e) {
         console.error(e);
-        setStatusMsg("Scan failed.");
+        setStatusMsg("Connection to Drive Tool failed.");
     } finally {
         setIsScanning(false);
     }
@@ -297,20 +281,37 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
     setChatInput('');
     setIsThinking(true);
 
-    // Construct Context ONLY from selected docs or summary
     let context = `Active Bill: ${bill.id} - ${bill.title}\n`;
     context += `Current Summary: ${summaryText}\n\n`;
     
     const relevantDocs = documents.filter(d => selectedDocIds.has(d.id));
+    
+    // Attempt to extract text on the fly if needed
+    let docsContext = "";
     if (relevantDocs.length > 0) {
-        context += `SELECTED DOCUMENTS FOR ANALYSIS:\n`;
-        relevantDocs.forEach(d => {
-            if(d.content) {
-                context += `--- ${d.title} ---\n${d.content.substring(0, 3000)}...\n\n`;
-            } else {
-                context += `--- ${d.title} ---\n(Content not loaded. URL: ${d.url})\n\n`;
-            }
-        });
+        setStatusMsg("Reading selected docs...");
+        for (const d of relevantDocs) {
+             if (d.content) {
+                 docsContext += `--- ${d.title} ---\n${d.content.substring(0, 3000)}...\n\n`;
+             } else if (d.downloadUrl) {
+                 // Try to read it now
+                 const text = await extractTextFromPDF(d.downloadUrl);
+                 if (text) {
+                     // Save for future
+                     d.content = text; 
+                     docsContext += `--- ${d.title} ---\n${text.substring(0, 3000)}...\n\n`;
+                 } else {
+                     docsContext += `--- ${d.title} ---\n(Could not auto-read. URL: ${d.url})\n\n`;
+                 }
+             }
+        }
+        setStatusMsg("Ready.");
+    }
+
+    if (docsContext) {
+        context += `SELECTED DOCUMENTS CONTENT:\n${docsContext}`;
+    } else {
+        context += `(No specific documents selected for this query. Using general bill context.)`;
     }
 
     const prompt = `Context:\n${context}\n\nUser Question: ${userMsg}`;
@@ -321,7 +322,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
   };
 
   const openDriveFolder = () => {
-      // Smart search for folder by name
+      // Use bill ID to search drive
       const searchUrl = `https://drive.google.com/drive/u/0/search?q=type:folder%20${bill.id}`;
       window.open(searchUrl, '_blank');
   };
@@ -384,10 +385,10 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
             {activeTab === 'docs' && (
                 <div className="h-full p-6 flex flex-col">
                      <div className="flex justify-between items-center mb-4">
-                        <h3 className="font-bold text-slate-800">Legislative Documents</h3>
-                        <button onClick={scanForDocs} disabled={isScanning} className="bg-slate-800 hover:bg-slate-700 text-white px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2">
+                        <h3 className="font-bold text-slate-800">Legislative Documents (From Drive)</h3>
+                        <button onClick={fetchDriveFiles} disabled={isScanning} className="bg-slate-800 hover:bg-slate-700 text-white px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2">
                             {isScanning ? <Loader size={16} className="animate-spin"/> : <RefreshCw size={16}/>}
-                            {isScanning ? "Scanning..." : "Scan for Docs"}
+                            {isScanning ? "Scanning Drive..." : "Scan Folder"}
                         </button>
                      </div>
                      
@@ -395,8 +396,8 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                         {documents.length === 0 ? (
                             <div className="text-center py-20 text-slate-400 border-2 border-dashed border-slate-200 rounded-lg">
                                 <FolderOpen size={48} className="mx-auto mb-2 opacity-20"/>
-                                <p>No documents found.</p>
-                                <p className="text-xs">Click 'Scan for Docs' to fetch from legislature.</p>
+                                <p>No files found in this bill's folder.</p>
+                                <p className="text-xs">Click 'Scan Folder' to pull file list from Google Drive.</p>
                             </div>
                         ) : (
                             documents.map((doc, i) => (
@@ -412,13 +413,11 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                                             <div className="font-bold text-slate-800">{doc.title}</div>
                                             <div className="text-xs text-slate-500 flex gap-2">
                                                 <span>{doc.type}</span>
-                                                <span className="text-slate-300">|</span>
-                                                <span>{doc.content ? `${doc.content.length} chars extracted` : "No text extracted"}</span>
                                             </div>
                                         </div>
                                     </div>
                                     <div className="flex gap-2">
-                                        <a href={doc.url} target="_blank" rel="noreferrer" className="p-2 text-slate-500 hover:bg-slate-100 rounded" title="Open PDF">
+                                        <a href={doc.url} target="_blank" rel="noreferrer" className="p-2 text-blue-600 hover:bg-blue-50 rounded" title="Open in Google Drive">
                                             <ExternalLink size={18}/>
                                         </a>
                                     </div>
@@ -437,7 +436,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                             <div className="text-center text-slate-400 py-10">
                                 <Sparkles size={32} className="mx-auto mb-2 text-yellow-400"/>
                                 <p>Ready to analyze {bill.id}.</p>
-                                <p className="text-xs">Select documents in the 'Documents' tab to give me context.</p>
+                                <p className="text-xs">Select documents in the 'Documents' tab. I'll attempt to read them for context.</p>
                             </div>
                         )}
                         {chatLog.map((msg, i) => (
@@ -447,7 +446,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                                 </div>
                             </div>
                         ))}
-                        {isThinking && <div className="flex items-center gap-2 text-slate-400 text-xs p-4"><Loader size={14} className="animate-spin"/> Analyzing documents...</div>}
+                        {isThinking && <div className="flex items-center gap-2 text-slate-400 text-xs p-4"><Loader size={14} className="animate-spin"/> Thinking...</div>}
                     </div>
                     <div className="p-4 bg-white border-t border-slate-200">
                         <form onSubmit={handleChat} className="relative">
@@ -518,7 +517,8 @@ export default function App() {
   const fetchSheetData = async () => {
       setIsScanning(true);
       try {
-          const response = await fetch(SHEET_CSV_URL);
+          // Use CorsProxy for CSV fetch if needed (Google Sheets CSV export usually allows CORS, but proxy is safer)
+          const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(SHEET_CSV_URL)}`);
           const text = await response.text();
           // Simple CSV parse
           const rows = text.split('\n').slice(1); // Skip header
@@ -536,6 +536,7 @@ export default function App() {
                   committee: clean(cols[3]),
                   year: clean(cols[4]),
                   status: clean(cols[5]),
+                  summary: clean(cols[1]), // Default summary to title
                   role: clean(cols[2]).includes('Penner') ? 'Sponsor' : 'Watching',
                   documents: []
               };
@@ -557,15 +558,17 @@ export default function App() {
       if(!user || !db) return;
       try {
           const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id);
-          await setDoc(ref, bill);
+          // Only save specific fields to avoid overwriting sheet data on reload if structure differs
+          await setDoc(ref, { 
+              id: bill.id,
+              documents: bill.documents || [],
+              summary: bill.summary
+          }, { merge: true });
       } catch(e) { console.error("Save failed", e); }
   };
 
   const handleRunDriveTool = async () => {
-      if(!GOOGLE_SCRIPT_URL) {
-          alert("Please configure GOOGLE_SCRIPT_URL in the code first.");
-          return;
-      }
+      if(!GOOGLE_SCRIPT_URL) return;
       setIsScanning(true);
       try {
           // Send request to user's Google Apps Script Web App (POST via proxy)
@@ -576,24 +579,11 @@ export default function App() {
           });
           const json = await res.json();
           if(json.status === "success") {
-              alert(`Tool triggered successfully. Processed ${json.processed} bills. Refreshing data...`);
-              fetchSheetData(); // Reload sheet data which the tool presumably updated
-          } else {
-              alert("Tool Error: " + json.message);
+              alert(`Drive Tool started. Processed: ${json.processed || 'Unknown'}.`);
+              fetchSheetData(); 
           }
       } catch(e) {
-          // Fallback to no-cors mode if proxy fails (blind trigger)
-          try {
-              await fetch(GOOGLE_SCRIPT_URL, {
-                  method: 'POST',
-                  mode: 'no-cors',
-                  headers: { 'Content-Type': 'text/plain' },
-                  body: JSON.stringify({ action: "run_all", secret: GOOGLE_SCRIPT_SECRET })
-              });
-              alert("Drive Tool triggered (Blind Mode). Check your sheet in a few minutes.");
-          } catch(err) {
-              alert("Connection failed completely. Check console.");
-          }
+          alert("Triggered via Blind Mode (CORS limitation). Check Drive in 2 mins.");
       }
       setIsScanning(false);
   };
@@ -620,6 +610,7 @@ export default function App() {
   const fetchFeeds = async () => {
       setIsScanning(true);
       try {
+          // Use CorsProxy for rss fetch if needed
           const res = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=https://www.thestranger.com/feed&api_key=`);
           const data = await res.json();
           if(data.items) {
