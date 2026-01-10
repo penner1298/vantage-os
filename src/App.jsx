@@ -62,32 +62,27 @@ import {
   MessageSquare,
   FileType,
   Save,
-  PlusCircle
+  PlusCircle,
+  RefreshCcw,
+  SearchCode
 } from 'lucide-react';
 
 /* --- 0. PDF PARSING UTILITY --- */
-// We use a CDN version of PDF.js to extract text from PDFs in the browser
 const extractTextFromPDF = async (url) => {
   try {
-    // 1. Load PDF.js library dynamically if not present
     if (!window.pdfjsLib) {
       const script = document.createElement('script');
       script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
       document.head.appendChild(script);
       await new Promise(resolve => script.onload = resolve);
-      // Set worker
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     }
 
-    // 2. Fetch the PDF via Proxy to avoid CORS
     const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
     const loadingTask = window.pdfjsLib.getDocument(proxyUrl);
     const pdf = await loadingTask.promise;
     
     let fullText = "";
-    
-    // 3. Iterate pages and extract text
-    // Limit to first 5 pages to keep data size manageable for DB and AI
     const maxPages = Math.min(pdf.numPages, 5); 
     for (let i = 1; i <= maxPages; i++) {
       const page = await pdf.getPage(i);
@@ -126,7 +121,7 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
   const systemPrompts = {
     general: "You are Vantage, a highly capable legislative Chief of Staff for Rep. Josh Penner. Your tone is professional, strategic, and concise.",
     political: "You are a political strategist. Focus on public perception, polling impact, and media narrative. Be persuasive and sharp.",
-    policy: "You are a legislative analyst. Focus on statutory interpretation, fiscal impact, and legal nuance. Be objective and thorough.",
+    policy: "You are a legislative analyst. Focus on statutory interpretation, fiscal impact, and legal nuance. Be objective and thorough. NOTE: If provided with document text, analyze it deeply. If provided with only a title/link for a PDF, outline exactly what the user should look for in that specific document type.",
     writer: "You are a communications director. Write engaging, clear, and voice-specific content for the Representative."
   };
 
@@ -155,12 +150,6 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
 
 // Robust Fetch Utility with multiple proxy fallbacks
 const fetchProxyContent = async (targetUrl) => {
-  const tryCorsProxy = async () => {
-    const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`);
-    if (!response.ok) throw new Error(`CorsProxy status: ${response.status}`);
-    return await response.text();
-  };
-  
   const tryAllOrigins = async () => {
     const response = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`);
     if (!response.ok) throw new Error(`AllOrigins status: ${response.status}`);
@@ -168,13 +157,19 @@ const fetchProxyContent = async (targetUrl) => {
     return data.contents;
   };
 
+  const tryCorsProxy = async () => {
+    const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`);
+    if (!response.ok) throw new Error(`CorsProxy status: ${response.status}`);
+    return await response.text();
+  };
+
   try {
-    return await tryCorsProxy(); // Try direct text proxy first
+    return await tryAllOrigins();
   } catch (e1) {
     try {
-      return await tryAllOrigins(); // Fallback to JSON wrapper
+      return await tryCorsProxy();
     } catch (e2) {
-      throw new Error("Unable to fetch content.");
+      throw new Error("Unable to fetch content. External site may be blocking access.");
     }
   }
 };
@@ -305,7 +300,7 @@ const DocumentViewer = ({ docData, onClose }) => {
              <div className="flex flex-col">
                <h3 className="font-semibold text-sm line-clamp-1">{title}</h3>
                <span className="text-[10px] text-slate-400">
-                 {content ? "Viewing Extracted Text" : "External Preview"}
+                 {content && content !== "[PDF Binary Downloaded]" ? "Viewing Database Copy" : "External Preview"}
                </span>
              </div>
           </div>
@@ -324,11 +319,12 @@ const DocumentViewer = ({ docData, onClose }) => {
                <div className="uppercase tracking-widest text-slate-500 text-xs font-bold mb-2">Washington State Legislature</div>
                <h1 className="text-xl font-serif font-bold text-slate-900">{title}</h1>
                {!content && <div className="text-xs text-red-500 mt-1">Live Preview Not Available - Click 'Open External'</div>}
+               {content === "[PDF Binary Downloaded]" && <div className="text-xs text-blue-500 mt-1">PDF Document (Binary) - Click 'Open External' to view</div>}
              </div>
              <div className="space-y-4 font-serif text-slate-800 text-sm leading-relaxed whitespace-pre-line">
-               {content ? content : (
+               {(content && content !== "[PDF Binary Downloaded]") ? content : (
                  <div className="text-center py-20 text-slate-400">
-                    <p className="italic mb-4">Content has not been imported yet.</p>
+                    <p className="italic mb-4">{content === "[PDF Binary Downloaded]" ? "This is a PDF document stored in your library." : "Content has not been imported yet."}</p>
                     {url && <a href={url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline font-sans text-sm font-bold">Open Original Document &rarr;</a>}
                  </div>
                )}
@@ -341,7 +337,7 @@ const DocumentViewer = ({ docData, onClose }) => {
 };
 
 // New Modal to Manage and Scan Bill Documents
-const BillDocumentsModal = ({ bill, onClose, onSave }) => {
+const BillDocumentsModal = ({ bill, onClose, onSave, onAnalyzeSelected }) => {
   const [isScanning, setIsScanning] = useState(false);
   const [importingId, setImportingId] = useState(null);
   const [documents, setDocuments] = useState(bill.documents || []);
@@ -384,7 +380,6 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
         try {
             const fnContent = await fetchProxyContent(fiscalNoteUrl);
             if(fnContent) {
-                // Find .pdf links in the fiscal note page content
                 const pdfRegex = /href="([^"]+\.pdf)"/gi;
                 let match;
                 while ((match = pdfRegex.exec(fnContent)) !== null) {
@@ -412,7 +407,6 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
       const contents = await fetchProxyContent(billPageUrl);
       if (contents) {
          // Regex to find ANY PDF link on the bill page
-         // This catches Reports, Analysis, Amendments etc that might not match exact paths
          const pdfLinkRegex = /href="([^"]+\.pdf)"[^>]*>([^<]+)<\/a>/gi;
          let match;
          while((match = pdfLinkRegex.exec(contents)) !== null) {
@@ -460,29 +454,23 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
     if(!autoSave) setStatusMsg(`Importing ${docToImport.title}...`);
     
     try {
-      // 1. Try to extract text from PDF/HTML
       let cleanText = "";
-      try {
-         if (docToImport.url.endsWith('.pdf')) {
-            cleanText = await extractTextFromPDF(docToImport.url);
-         } else {
-             // Basic HTML fetch fallback
-             const contents = await fetchProxyContent(docToImport.url);
-             if (contents) {
-                const parser = new DOMParser();
-                const dom = parser.parseFromString(contents, 'text/html');
-                cleanText = dom.body.innerText;
-             }
-         }
-      } catch(parseErr) {
-          console.warn("Parsing failed", parseErr);
-          // If parsing fails, we mark it imported but empty content (AI will ask for paste)
+      // Only extract text if it's a PDF
+      if (docToImport.url.toLowerCase().endsWith('.pdf')) {
+          cleanText = await extractTextFromPDF(docToImport.url);
+      } else {
+          // HTML Fetch Fallback
+          const raw = await fetchProxyContent(docToImport.url);
+          if (raw && raw.length < 900000) {
+             // Basic HTML tag stripping
+             cleanText = raw.replace(/<[^>]*>?/gm, ' '); 
+          }
       }
       
       const updatedDocs = [...documents];
       updatedDocs[docIndex] = { 
          ...docToImport, 
-         content: cleanText || "", 
+         content: cleanText || "[No Text Extracted]", 
          imported: true, 
          importedDate: new Date().toLocaleDateString() 
       };
@@ -492,7 +480,7 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
        
        return updatedDocs;
     } catch(e) {
-        if(!autoSave) setStatusMsg("Import failed.");
+        if(!autoSave) setStatusMsg("Import failed: " + e.message);
         return documents;
     } finally {
         if(!autoSave) setImportingId(null);
@@ -537,7 +525,6 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
     onClose();
   };
 
-  // Auto-scan on open if empty
   useEffect(() => {
      if(documents.length === 0 && !isScanning) {
          scanBillDocs();
@@ -560,7 +547,7 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
            <div className="text-xs font-mono text-slate-600 truncate max-w-xs">{statusMsg || "Ready."}</div>
            <div className="flex gap-2">
              <button onClick={() => setShowManualAdd(!showManualAdd)} className="flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 rounded text-xs font-bold transition-colors">
-                <PlusCircle size={14}/> Add Manual Doc
+                <PlusCircle size={14}/> Manual Add
              </button>
              <button onClick={scanBillDocs} disabled={isScanning} className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-bold transition-colors">
                 {isScanning ? <Loader size={14} className="animate-spin"/> : <RefreshCw size={14}/>}
@@ -596,8 +583,7 @@ const BillDocumentsModal = ({ bill, onClose, onSave }) => {
           {documents.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-40 text-slate-400 border-2 border-dashed border-slate-200 rounded-lg">
                <File size={32} className="mb-2 opacity-50"/>
-               <p className="text-sm">No documents tracked.</p>
-               <p className="text-xs">Click 'Scan Web' to find files or 'Add Manual Doc'.</p>
+               <p className="text-sm">No documents found.</p>
             </div>
           ) : (
             <div className="space-y-2">
@@ -711,12 +697,45 @@ const AddEditBillModal = ({ onClose, onSave, onDelete, initialBill }) => {
     documents: []
   });
 
+  const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
+
   const isEdit = !!initialBill;
 
   const handleSubmit = () => {
     if(!billData.id) return;
     onSave(billData);
     onClose();
+  };
+
+  const lookupBillMetadata = async () => {
+      if(!billData.id) return;
+      setIsLoadingMetadata(true);
+      const number = billData.id.replace(/[^0-9]/g, '');
+      const biennium = "2025-26";
+      
+      try {
+          const url = `https://wslwebservices.leg.wa.gov/LegislationService.asmx/GetLegislation?biennium=${biennum}&billNumber=${number}`;
+          const xml = await fetchProxyContent(url);
+          const parser = new DOMParser();
+          const xmlDoc = parser.parseFromString(xml, "text/xml");
+          
+          const shortDesc = xmlDoc.querySelector("ShortDescription")?.textContent;
+          const longDesc = xmlDoc.querySelector("LongDescription")?.textContent;
+          
+          if(shortDesc || longDesc) {
+              setBillData(prev => ({
+                  ...prev,
+                  title: shortDesc || longDesc,
+                  // We could fetch sponsors too but let's stick to basic
+              }));
+          } else {
+              alert("Bill not found in 2025-26 biennium.");
+          }
+      } catch(e) {
+          console.error(e);
+      } finally {
+          setIsLoadingMetadata(false);
+      }
   };
 
   return (
@@ -729,7 +748,14 @@ const AddEditBillModal = ({ onClose, onSave, onDelete, initialBill }) => {
         <div className="grid grid-cols-2 gap-4 mb-4">
           <div>
             <label className="block text-xs font-bold text-slate-500 mb-1">Bill Number</label>
-            <input className="w-full border p-2 rounded text-sm" placeholder="e.g. HB 2405" value={billData.id} onChange={e => setBillData({...billData, id: e.target.value})} autoFocus={!isEdit}/>
+            <div className="flex gap-1">
+                <input className="w-full border p-2 rounded text-sm" placeholder="e.g. 2405" value={billData.id} onChange={e => setBillData({...billData, id: e.target.value})} autoFocus={!isEdit}/>
+                {!isEdit && (
+                    <button onClick={lookupBillMetadata} disabled={isLoadingMetadata} className="px-2 bg-slate-100 border rounded hover:bg-slate-200" title="Auto-fill details">
+                        {isLoadingMetadata ? <Loader size={14} className="animate-spin"/> : <SearchCode size={14}/>}
+                    </button>
+                )}
+            </div>
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 mb-1">Session Year</label>
@@ -763,6 +789,7 @@ const AddEditBillModal = ({ onClose, onSave, onDelete, initialBill }) => {
             <select className="w-full border p-2 rounded bg-white text-sm" value={billData.role} onChange={e => setBillData({...billData, role: e.target.value})}>
               <option>Primary Sponsor</option>
               <option>Co-Sponsor</option>
+              <option>Watching</option>
             </select>
           </div>
           <div>
@@ -836,6 +863,7 @@ export default function App() {
   useEffect(() => {
     if(!auth) return;
     const initAuth = async () => {
+      // Check for custom token from environment
       if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
         try {
           await signInWithCustomToken(auth, __initial_auth_token);
@@ -854,12 +882,31 @@ export default function App() {
 
   useEffect(() => {
     if (!user || !db) return;
-    const billsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
+    
+    // Using a shared "demo_user" path for consistency in this environment if user is anonymous
+    // In a real app, you'd use user.uid
+    const userId = "demo_user_" + appId; 
+    
+    const billsRef = collection(db, 'artifacts', appId, 'users', userId, 'bills');
+    
     const unsubscribe = onSnapshot(billsRef, (snapshot) => {
       if (snapshot.empty) {
-        if(bills.length === 0) setBills(INITIAL_BILLS); 
+        // If CLOUD is empty, check if we have LOCAL data.
+        // If we do (e.g. default list), we should UPLOAD it to cloud so it persists.
+        if (bills.length > 0) {
+             const batch = writeBatch(db);
+             bills.forEach(b => {
+                 const ref = doc(db, 'artifacts', appId, 'users', userId, 'bills', b.id);
+                 batch.set(ref, b);
+             });
+             batch.commit().catch(console.error);
+        } else {
+            // Truly empty everywhere, load defaults
+            setBills(INITIAL_BILLS); 
+        }
         return;
       }
+
       const loadedBills = snapshot.docs.map(doc => ({
         ...doc.data(),
         id: doc.id
@@ -869,75 +916,144 @@ export default function App() {
     }, (error) => {
       console.warn("Using Local Storage due to sync error:", error);
     });
+
     return () => unsubscribe();
   }, [user]);
 
   // --- ACTIONS ---
 
   const handleSaveBill = async (billData) => {
+    const userId = "demo_user_" + appId; 
+    // Optimistic Update
     const newBills = editingBill 
       ? bills.map(b => b.id === billData.id ? billData : b)
       : [billData, ...bills];
-    
-    // If updating from Doc Manager, we might not have editingBill set, so ensure update
-    const billIndex = bills.findIndex(b => b.id === billData.id);
-    let updatedStateBills;
-    if (billIndex >= 0) {
-        updatedStateBills = [...bills];
-        updatedStateBills[billIndex] = billData;
-    } else {
-        updatedStateBills = [billData, ...bills];
-    }
 
-    setBills(updatedStateBills);
-    localStorage.setItem('vantage_bills', JSON.stringify(updatedStateBills));
+    setBills(newBills);
+    localStorage.setItem('vantage_bills', JSON.stringify(newBills));
     setEditingBill(null);
 
     if (!user || !db) return;
     try {
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', billData.id);
+      const docRef = doc(db, 'artifacts', appId, 'users', userId, 'bills', billData.id);
       await setDoc(docRef, billData);
-      
-      // Persistence Fix: Seed defaults if this is the first custom action
-      // This prevents the new bill from being the ONLY bill in the cloud
-      if (bills.length === INITIAL_BILLS.length && bills[0].id === INITIAL_BILLS[0].id) {
-          const batch = writeBatch(db);
-          bills.forEach(b => {
-             if(b.id !== billData.id) {
-                 const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', b.id);
-                 batch.set(ref, b);
-             }
-          });
-          await batch.commit();
-      }
-
     } catch (e) {
       console.warn("Saved locally only (Cloud error):", e);
     }
   };
 
   const handleDeleteBill = async (billId) => {
+    const userId = "demo_user_" + appId;
     const newBills = bills.filter(b => b.id !== billId);
     setBills(newBills);
     localStorage.setItem('vantage_bills', JSON.stringify(newBills));
     if (!user || !db) return;
     try {
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', billId);
+      const docRef = doc(db, 'artifacts', appId, 'users', userId, 'bills', billId);
       await deleteDoc(docRef);
     } catch (e) {
       console.warn("Deleted locally only (Cloud error):", e);
     }
   };
 
+  // SYNC MY BILLS FEATURE
+  const handleSyncMyBills = async () => {
+    if(!window.confirm("This will fetch all bills sponsored by Rep. Penner (ID 35416) from the Legislative Website and add them to your tracker. Continue?")) return;
+    
+    setIsScanning(true);
+    setScanLog(prev => ["Syncing Sponsored Bills...", ...prev]);
+    
+    // We scrape the specific report page 
+    // Note: Since this is HTML scraping, it's fragile if the legislature changes their site layout.
+    const reportUrl = "https://app.leg.wa.gov/bi/report/BillsBySponsor/?biennium=2025-26&hasCompanionBills=false&billsBySponsorReportType=AllBills&sponsorType=House&HouseSponsorId=35416";
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(reportUrl)}`;
+
+    try {
+      const response = await fetch(proxyUrl);
+      const data = await response.json();
+      if (!data.contents) throw new Error("Could not fetch sponsor report.");
+
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(data.contents, 'text/html');
+      
+      // Select all table rows in the main report tables
+      // The structure usually has tables with class 'display' or similar, we iterate trs
+      const rows = Array.from(doc.querySelectorAll('tr'));
+      
+      let addedCount = 0;
+      const batch = writeBatch(db);
+      const userId = "demo_user_" + appId;
+
+      rows.forEach(row => {
+          const cells = row.querySelectorAll('td');
+          // Heuristic: Rows with bill info usually have ~8-9 cells.
+          // Cell 0 or 1 contains the Bill ID link.
+          if(cells.length > 5) {
+             const billLink = row.querySelector('a');
+             if(billLink && billLink.textContent.includes('HB') || billLink.textContent.includes('SB')) {
+                 const billId = billLink.textContent.trim();
+                 // Title is usually next cell
+                 const title = cells[2]?.textContent.trim() || "Imported Bill";
+                 const status = cells[3]?.textContent.trim() || "Unknown";
+                 
+                 // Determine Role based on context or assume Primary if it was the Primary table
+                 // For simplicity in scraping single page, we check existing or default to Co-Sponsor
+                 // unless we can detect the 'Primary' header section. 
+                 // We'll set role to "Synced" so user can verify.
+                 
+                 const newBill = {
+                     id: billId,
+                     title: title,
+                     status: status,
+                     committee: "Unknown", // Scraper enhancement needed for committee
+                     role: "Synced Bill", 
+                     sponsor: "Rep. Penner",
+                     year: "2025",
+                     priority: "Medium",
+                     documents: []
+                 };
+
+                 // Check if we already track it
+                 if(!bills.find(b => b.id === billId)) {
+                     const ref = doc(db, 'artifacts', appId, 'users', userId, 'bills', billId);
+                     batch.set(ref, newBill);
+                     addedCount++;
+                 }
+             }
+          }
+      });
+      
+      if(addedCount > 0) {
+          await batch.commit();
+          alert(`Sync Complete! Added ${addedCount} new bills.`);
+      } else {
+          alert("Sync Complete. No new bills found to add.");
+      }
+
+    } catch (e) {
+      console.error(e);
+      alert("Sync failed. " + e.message);
+    } finally {
+        setIsScanning(false);
+    }
+  };
+
+
   const handleResetData = async () => {
+    const userId = "demo_user_" + appId;
     if(!window.confirm("This will overwrite your data with default bills. Are you sure?")) return;
+    
+    // Clear Local
     setBills(INITIAL_BILLS);
     localStorage.setItem('vantage_bills', JSON.stringify(INITIAL_BILLS));
+
+    // Clear & Reseed Cloud
     if (user && db) {
       try {
         const batch = writeBatch(db);
+        // We'd ideally delete first, but overwrite works if IDs match
         INITIAL_BILLS.forEach(bill => {
-           const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id);
+           const docRef = doc(db, 'artifacts', appId, 'users', userId, 'bills', bill.id);
            batch.set(docRef, bill);
         });
         await batch.commit();
@@ -956,23 +1072,20 @@ export default function App() {
      
      selectedDocs.forEach(d => {
          prompt += `\n\n--- DOCUMENT: ${d.title} ---`;
-         if(d.content && d.content.length > 50) {
-             // If extracted text exists
+         if(d.content && d.content.length > 50 && d.content !== "[PDF Binary Downloaded]") {
+             // Truncate content to avoid token limits
              prompt += `\n[CONTENT SNIPPET]:\n${d.content.substring(0, 4000)}...`;
          } else {
-             // If binary/PDF
-             prompt += `\n[TYPE]: PDF / Binary File`;
              prompt += `\n[URL]: ${d.url}`;
-             prompt += `\n[NOTE]: I cannot read this PDF file directly.`;
          }
      });
 
      prompt += `\n\nINSTRUCTIONS: 
-     1. Summarize the key policy changes proposed based on available text.
-     2. Identify any specific fiscal impacts mentioned.
+     1. Summarize the key policy changes proposed.
+     2. Identify any specific fiscal impacts mentioned in the Fiscal Notes.
+     3. Highlight any controversial sections or potential opposition points.
      
-     IMPORTANT: For any document marked as "PDF / Binary File" that has no content, explicitly tell me: 
-     "I cannot read the PDF [Document Title] directly. Please copy the text from the PDF and use the 'Add Manual Doc' button in the Bill Resources window to paste it for analysis."`;
+     IMPORTANT: If a document is marked as a PDF that you cannot read, explicitly state: "I see you selected [Document Name]. Since it is a PDF, I cannot read it directly. Please paste the relevant text from your local copy below."`;
      
      setShowAIPanel(true);
      setAiPrompt(prompt);
@@ -1170,6 +1283,11 @@ export default function App() {
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
           <div><h2 className="text-2xl font-bold text-slate-900">Legislation Tracker</h2><p className="text-slate-500 text-sm">Managing {bills.length} sponsored bills</p></div>
           <div className="flex flex-wrap items-center gap-3">
+             <button onClick={handleSyncMyBills} disabled={isScanning} className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-bold transition-colors">
+                {isScanning ? <Loader size={14} className="animate-spin"/> : <RefreshCcw size={14}/>}
+                {isScanning ? "Syncing..." : "Sync My Bills"}
+             </button>
+
              <div className="flex items-center gap-2 mr-2 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 cursor-pointer" onClick={() => setHidePassed(!hidePassed)}>
                 <div className={`w-4 h-4 rounded border flex items-center justify-center ${hidePassed ? 'bg-blue-600 border-blue-600' : 'bg-white border-slate-400'}`}>
                    {hidePassed && <CheckCircle size={10} className="text-white"/>}
@@ -1178,7 +1296,7 @@ export default function App() {
              </div>
              
              <div className="flex bg-white rounded-lg border border-slate-300 p-1">
-                {['All', 'Primary', 'Co-Sponsor'].map(role => (
+                {['All', 'Primary', 'Co-Sponsor', 'Watching'].map(role => (
                    <button key={role} onClick={() => setFilterRole(role)} className={`px-3 py-1.5 text-xs font-bold rounded transition-colors ${filterRole === role ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-50'}`}>{role}</button>
                 ))}
              </div>
@@ -1471,7 +1589,7 @@ export default function App() {
       {viewingCitation && <DocumentViewer citation={viewingCitation} onClose={() => setViewingCitation(null)} />}
       {warRoomItem && <WarRoomModal item={warRoomItem} onClose={() => setWarRoomItem(null)} />}
       {showBillModal && <AddEditBillModal onClose={() => { setShowBillModal(false); setEditingBill(null); }} onSave={handleSaveBill} onDelete={handleDeleteBill} initialBill={editingBill} />}
-      {managingDocsBill && <BillDocumentsModal bill={managingDocsBill} onClose={() => setManagingDocsBill(null)} onSave={handleSaveBill} />}
+      {managingDocsBill && <BillDocumentsModal bill={managingDocsBill} onClose={() => setManagingDocsBill(null)} onSave={handleSaveBill} onAnalyzeSelected={handleAnalyzeSelectedDocs} />}
 
       <aside className="w-20 md:w-64 bg-slate-900 text-slate-300 flex flex-col shadow-xl z-20 flex-shrink-0 transition-all duration-300">
         <div className="p-4 md:p-6 border-b border-slate-800 flex items-center gap-3">
