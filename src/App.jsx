@@ -248,7 +248,8 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
        const legDoc = parser.parseFromString(legXml, "text/xml");
        
        const newDocs = [...documents];
-       
+       const addDoc = (d) => { if(!newDocs.find(x => x.url === d.url)) newDocs.push(d); };
+
        const mapping = {
            "OriginalTextUrl": "Original Bill",
            "BillReportUrl": "Bill Report",
@@ -266,17 +267,14 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                    const text = await extractTextFromPDF(url);
                    if(text) content = text;
                }
-               // Avoid duplicates
-               if(!newDocs.find(d => d.url === url)) {
-                 newDocs.push({
-                     id: `${label}-${Date.now()}`,
-                     title: `${label} (${year})`,
-                     type: label,
-                     url: url,
-                     content: content,
-                     date: new Date().toLocaleDateString()
-                 });
-               }
+               addDoc({
+                   id: `${label}-${Date.now()}`,
+                   title: `${label} (${year})`,
+                   type: label,
+                   url: url,
+                   content: content,
+                   date: new Date().toLocaleDateString()
+               });
            }
        }
        setDocuments(newDocs);
@@ -662,26 +660,6 @@ export default function App() {
         </header>
 
         <div className="flex-1 overflow-y-auto p-8">
-            
-            {/* DASHBOARD TAB (Restored) */}
-            {activeTab === 'dashboard' && (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div className="bg-white p-6 rounded-xl border shadow-sm">
-                        <h3 className="text-slate-500 text-xs font-bold uppercase mb-2">Total Bills</h3>
-                        <div className="text-3xl font-bold text-slate-900">{bills.length}</div>
-                    </div>
-                    <div className="bg-white p-6 rounded-xl border shadow-sm">
-                         <h3 className="text-slate-500 text-xs font-bold uppercase mb-2">My Sponsorships</h3>
-                         <div className="text-3xl font-bold text-slate-900">{bills.filter(b => b.role.includes("Sponsor")).length}</div>
-                    </div>
-                    <div className="bg-white p-6 rounded-xl border shadow-sm">
-                         <h3 className="text-slate-500 text-xs font-bold uppercase mb-2">Latest Intel</h3>
-                         <div className="text-3xl font-bold text-slate-900">{intelItems.length}</div>
-                    </div>
-                </div>
-            )}
-
-            {/* LEGISLATION TAB */}
             {activeTab === 'legislation' && (
                 <div className="space-y-4">
                     <div className="flex justify-between items-center">
@@ -730,6 +708,19 @@ export default function App() {
                                 )}
                             </tbody>
                         </table>
+                    </div>
+                </div>
+            )}
+            
+            {activeTab === 'dashboard' && (
+                <div className="grid grid-cols-3 gap-6">
+                    <div className="bg-white p-6 rounded-xl border shadow-sm">
+                        <h3 className="text-slate-500 text-xs font-bold uppercase mb-2">Total Bills</h3>
+                        <div className="text-3xl font-bold text-slate-900">{bills.length}</div>
+                    </div>
+                    <div className="bg-white p-6 rounded-xl border shadow-sm">
+                        <h3 className="text-slate-500 text-xs font-bold uppercase mb-2">My Sponsorships</h3>
+                        <div className="text-3xl font-bold text-slate-900">{bills.filter(b => b.sponsor.includes("Penner")).length}</div>
                     </div>
                 </div>
             )}
