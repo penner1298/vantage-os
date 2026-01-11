@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch, getDocs } from 'firebase/firestore';
 import { 
   LayoutDashboard, 
   FileText, 
@@ -67,13 +67,14 @@ import {
   SearchCode,
   BookOpen,
   Table,
-  Play
+  Play,
+  Link as LinkIcon,
+  CalendarDays
 } from 'lucide-react';
 
 /* --- 0. CONFIGURATION & UTILITIES --- */
 
-// UPDATED: New Web App URL provided
-const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyDmmhMR5MIZ2klnElIGdbeqvAJfyVlh1e92DViE1HXwwKZn1XrxqkywMi1Vney1N8mPg/exec"; 
+const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyNDjq7WNNcmKZLA3EatMZfzTp6B5_LA-kc--P_oJBmYpmtLAnIIyESeKc94Evm_sq7Bg/exec"; 
 const GOOGLE_SCRIPT_SECRET = "my-secret-password";
 const GOOGLE_SHEET_ID = "1RNiCiYFUp8KLzxZY3DaEbLEH3afoYHUbHa-wCF4BEYE";
 const SHEET_CSV_URL = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv`;
@@ -89,10 +90,10 @@ function parseCSVLine(line) {
     const char = line[i];
     if (char === '"') {
       if (inQuotes && line[i + 1] === '"') {
-        current += '"'; // Escaped quote
+        current += '"'; 
         i++;
       } else {
-        inQuotes = !inQuotes; // Toggle quotes
+        inQuotes = !inQuotes;
       }
     } else if (char === ',' && !inQuotes) {
       result.push(current.trim());
@@ -105,7 +106,7 @@ function parseCSVLine(line) {
   return result;
 }
 
-// PDF Text Extractor using PDF.js via CDN
+// PDF Text Extractor
 const extractTextFromPDF = async (url) => {
   try {
     if (!window.pdfjsLib) {
@@ -115,16 +116,11 @@ const extractTextFromPDF = async (url) => {
       await new Promise(resolve => script.onload = resolve);
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     }
-
-    // Attempt to use corsproxy to fetch the PDF bytes
     const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-    
     const loadingTask = window.pdfjsLib.getDocument(proxyUrl);
     const pdf = await loadingTask.promise;
-    
     let fullText = "";
-    // Limit pages to avoid huge payloads
-    const maxPages = Math.min(pdf.numPages, 15); 
+    const maxPages = Math.min(pdf.numPages, 10); 
     for (let i = 1; i <= maxPages; i++) {
       const page = await pdf.getPage(i);
       const textContent = await page.getTextContent();
@@ -140,7 +136,6 @@ const extractTextFromPDF = async (url) => {
 
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
 
-// Safe environment variable access for Gemini
 let apiKey = "";
 try {
   // @ts-ignore
@@ -185,13 +180,8 @@ const fetchProxyContent = async (targetUrl) => {
   const tryAllOrigins = async () => {
     const response = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`);
     if (!response.ok) throw new Error(`AllOrigins status: ${response.status}`);
-    const text = await response.text();
-    try {
-        const data = JSON.parse(text);
-        return data.contents;
-    } catch(e) {
-        throw new Error("AllOrigins returned non-JSON");
-    }
+    const data = await response.json();
+    return data.contents;
   };
   const tryCorsProxy = async () => {
     const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`);
@@ -240,6 +230,17 @@ const FEED_CONFIG = [
   { url: "https://www.seattletimes.com/opinion/feed/", name: "Seattle Times Op", category: "Media" },
   { url: "https://www.spokesman.com/feeds/stories/", name: "Spokesman Main", category: "Media" }
 ];
+
+// USER COMMITTEES CONFIG (Used for filtering API results)
+const MY_COMMITTEE_NAMES = [
+    "Appropriations", 
+    "Finance", 
+    "Early Learning & Human Services", 
+    "Innovation, Community & Economic Development, & Veterans" // Adjusted TEDV full name match
+];
+
+const DATE_FORMAT_OPTIONS = { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+
 
 /* --- 3. BILL WORKSPACE COMPONENT --- */
 
@@ -291,7 +292,6 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
        const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(GOOGLE_SCRIPT_URL)}`;
        
        // Sending command to your script to look up files for this bill ID
-       // UPDATED: Sending FULL ID (e.g. "HB 2200") to match folder name "HB 2200 - Title"
        const res = await fetch(proxyUrl, {
            method: 'POST',
            redirect: 'follow', // Follow redirects from Google Script
@@ -331,7 +331,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                        type: f.name.toLowerCase().includes("fiscal") ? "Fiscal Note" : "Document",
                        url: f.url, 
                        downloadUrl: downloadUrl, 
-                       content: "", // Will be filled if analyzed
+                       content: "", 
                        imported: false,
                        date: new Date().toLocaleDateString()
                    };
@@ -350,9 +350,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                setStatusMsg("Folder found, but no files inside.");
            }
        } else {
-           // If folder not found via API, we just don't have files yet.
-           // User can still click "Open Folder" to go to master folder.
-           setStatusMsg("Folder not found via API. Check Drive manually.");
+           setStatusMsg(json.message || "Folder not found in Drive.");
        }
     } catch (e) {
         console.error(e);
@@ -542,7 +540,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                             <div className="text-center text-slate-400 py-10">
                                 <Sparkles size={32} className="mx-auto mb-2 text-yellow-400"/>
                                 <p>Ready to analyze {bill.id}.</p>
-                                <p className="text-xs">Select documents in the 'Documents' tab. I'll attempt to read them for context.</p>
+                                <p className="text-xs">Select documents in the 'Documents' tab for reference.</p>
                             </div>
                         )}
                         {chatLog.map((msg, i) => (
@@ -579,7 +577,8 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('legislation'); // Default to Legislation
-  const [bills, setBills] = useState([]);
+  const [sheetBills, setSheetBills] = useState([]);
+  const [firebaseData, setFirebaseData] = useState({});
   const [intelItems, setIntelItems] = useState([]);
   const [user, setUser] = useState(null);
   const [workspaceBill, setWorkspaceBill] = useState(null);
@@ -589,6 +588,24 @@ export default function App() {
   const [analysisResult, setAnalysisResult] = useState('');
   const [filterRole, setFilterRole] = useState('All');
   const [sortKey, setSortKey] = useState('id');
+  const [meetings, setMeetings] = useState([]);
+
+  // Derived Bills: Sheet is master, Firebase is enrichment
+  const bills = useMemo(() => {
+      if(sheetBills.length === 0 && Object.keys(firebaseData).length > 0) {
+          // If sheet fails to load, maybe show firebase cached data?
+          return Object.values(firebaseData);
+      }
+      return sheetBills.map(sb => {
+          const fb = firebaseData[sb.id] || {};
+          return {
+              ...sb, // Metadata from sheet wins
+              documents: fb.documents || [],
+              summary: fb.summary || sb.summary,
+              driveLink: fb.driveLink || sb.driveLink
+          };
+      });
+  }, [sheetBills, firebaseData]);
 
   // Auth & Sync
   useEffect(() => {
@@ -598,41 +615,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    // 1. Initial Load from Sheet (The Source of Truth)
     fetchSheetData();
-
-    // 2. Setup Firebase Sync for User Overrides (Documents, Chat History)
     if (!user || !db) return;
     const billsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
     const unsubscribe = onSnapshot(billsRef, (snapshot) => {
-        const userBills = snapshot.docs.map(doc => doc.data());
-        // Merge: Update the sheet data with local overrides if IDs match
-        setBills(prev => {
-            const merged = [...prev];
-            userBills.forEach(ub => {
-                const idx = merged.findIndex(p => p.id === ub.id);
-                if(idx >= 0) {
-                    // Only update if override exists, preserve structure
-                    merged[idx] = { ...merged[idx], ...ub };
-                } else {
-                    // It's a new bill added via app, not in sheet yet
-                    merged.push(ub);
-                }
-            });
-            // Ensure unique
-            const unique = [];
-            const map = new Map();
-            for (const item of merged) {
-                if(!map.has(item.id)){
-                    map.set(item.id, true);
-                    unique.push(item);
-                }
-            }
-            return unique;
+        const dataMap = {};
+        snapshot.docs.forEach(doc => {
+            dataMap[doc.id] = doc.data();
         });
+        setFirebaseData(dataMap);
     });
     return () => unsubscribe();
   }, [user]);
+
+  // Initial Fetch of Committees
+  useEffect(() => {
+    if(activeTab === 'committees') fetchCommitteeMeetings();
+  }, [activeTab]);
 
   const fetchSheetData = async () => {
       setIsScanning(true);
@@ -646,15 +645,12 @@ export default function App() {
           }
           const text = await response.text();
           // Proper CSV parse
-          const rows = text.split('\n').slice(1); // Skip header
+          const rows = text.split('\n').slice(1);
           const parsedBills = rows.map(row => {
               const cols = parseCSVLine(row);
               if(cols.length < 5) return null;
-
-              // MAP SHEET COLUMNS
               const id = cols[0];
               if(!id) return null;
-
               return {
                   id: id,
                   title: cols[1] || "No Title",
@@ -668,25 +664,17 @@ export default function App() {
                   documents: []
               };
           }).filter(b => b && b.id);
-          
-          if(parsedBills.length > 0) {
-             setBills(parsedBills);
-          }
-      } catch (e) {
-          console.error("Sheet Load Error", e);
-      }
+          if(parsedBills.length > 0) setSheetBills(parsedBills);
+      } catch (e) { console.error("Sheet Load Error", e); }
       setIsScanning(false);
   };
 
-  // Actions
   const handleSaveBill = async (bill) => {
-      // Update local state immediately
-      setBills(prev => prev.map(b => b.id === bill.id ? bill : b));
-      
-      // Persist to Cloud (User specific override)
+      // Only persisting changes to Firebase since Sheet is read-only
       if(!user || !db) return;
       try {
           const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id);
+          // Only save enrichment fields to avoid overwriting sheet metadata if we re-sync
           await setDoc(ref, { 
               id: bill.id,
               documents: bill.documents || [],
@@ -696,22 +684,57 @@ export default function App() {
       } catch(e) { console.error("Save failed", e); }
   };
 
-  const handleRunDriveTool = async () => {
-      if(!GOOGLE_SCRIPT_URL) return;
-      setIsScanning(true);
-      try {
-          // Trigger Google Apps Script via blind POST (no-cors)
-          await fetch(GOOGLE_SCRIPT_URL, {
-              method: 'POST',
-              mode: 'no-cors',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: "run_all", secret: GOOGLE_SCRIPT_SECRET })
-          });
-          alert("Drive Maintenance Tool triggered. Check your Google Sheet in a few minutes, then click 'Refresh Sheet'.");
-      } catch(e) {
-          alert("Trigger failed.");
-      }
-      setIsScanning(false);
+  const fetchCommitteeMeetings = async () => {
+     setIsScanning(true);
+     try {
+         const beginDate = new Date().toISOString().split('T')[0];
+         const endDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+         const url = `https://wslwebservices.leg.wa.gov/CommitteeMeetingService.asmx/GetCommitteeMeetings?beginDate=${beginDate}&endDate=${endDate}`;
+         const xml = await fetchProxyContent(url);
+         const parser = new DOMParser();
+         const doc = parser.parseFromString(xml, "text/xml");
+         const meetingNodes = Array.from(doc.querySelectorAll("CommitteeMeeting"));
+         
+         const parsedMeetings = [];
+         
+         for (const node of meetingNodes) {
+             const agency = node.querySelector("Agency")?.textContent;
+             const commName = node.querySelector("Name")?.textContent;
+             const date = node.querySelector("Date")?.textContent;
+             const agendaId = node.querySelector("AgendaId")?.textContent;
+
+             if (MY_COMMITTEE_NAMES.some(name => commName?.includes(name))) {
+                 let agendaItems = [];
+                 if (agendaId) {
+                    try {
+                        const itemUrl = `https://wslwebservices.leg.wa.gov/CommitteeMeetingService.asmx/GetCommitteeMeetingItems?agendaId=${agendaId}`;
+                        const itemXml = await fetchProxyContent(itemUrl);
+                        const itemDoc = parser.parseFromString(itemXml, "text/xml");
+                        const items = Array.from(itemDoc.querySelectorAll("CommitteeMeetingItem"));
+                        agendaItems = items.map(i => ({
+                            billId: i.querySelector("BillId")?.textContent,
+                            desc: i.querySelector("ItemDescription")?.textContent
+                        })).filter(i => i.billId);
+                    } catch(e) {}
+                 }
+
+                 parsedMeetings.push({
+                     id: agendaId,
+                     committee: commName,
+                     agency: agency,
+                     rawDate: new Date(date),
+                     date: new Date(date).toLocaleString('en-US', DATE_FORMAT_OPTIONS),
+                     bills: agendaItems
+                 });
+             }
+         }
+         
+         // Sort by date
+         parsedMeetings.sort((a, b) => a.rawDate - b.rawDate);
+         
+         setMeetings(parsedMeetings);
+     } catch(e) {}
+     setIsScanning(false);
   };
 
   const getFilteredBills = () => {
@@ -745,6 +768,14 @@ export default function App() {
       } catch(e) {}
       setIsScanning(false);
   };
+  
+  const handleOpenBillFromDashboard = (billId) => {
+      let target = bills.find(b => b.id === billId);
+      if(!target) {
+          target = { id: billId, title: 'Unknown Title', year: '2025', documents: [] };
+      }
+      setWorkspaceBill(target);
+  };
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
@@ -761,11 +792,11 @@ export default function App() {
       <aside className="w-20 md:w-64 bg-slate-900 text-slate-300 flex flex-col shadow-xl z-20">
         <div className="p-6 border-b border-slate-800 font-bold text-white tracking-widest text-lg">VANTAGE</div>
         <nav className="flex-1 py-6 space-y-1">
-            <button onClick={() => setActiveTab('legislation')} className={`w-full flex items-center gap-4 px-6 py-3 ${activeTab === 'legislation' ? 'bg-slate-800 text-white' : 'hover:bg-slate-800'}`}>
-                <FileText size={20}/> <span className="hidden md:block">Legislation</span>
-            </button>
             <button onClick={() => setActiveTab('dashboard')} className={`w-full flex items-center gap-4 px-6 py-3 ${activeTab === 'dashboard' ? 'bg-slate-800 text-white' : 'hover:bg-slate-800'}`}>
                 <LayoutDashboard size={20}/> <span className="hidden md:block">Dashboard</span>
+            </button>
+            <button onClick={() => setActiveTab('legislation')} className={`w-full flex items-center gap-4 px-6 py-3 ${activeTab === 'legislation' ? 'bg-slate-800 text-white' : 'hover:bg-slate-800'}`}>
+                <FileText size={20}/> <span className="hidden md:block">Legislation</span>
             </button>
             <button onClick={() => setActiveTab('committees')} className={`w-full flex items-center gap-4 px-6 py-3 ${activeTab === 'committees' ? 'bg-slate-800 text-white' : 'hover:bg-slate-800'}`}>
                 <Users size={20}/> <span className="hidden md:block">Committees</span>
@@ -781,12 +812,57 @@ export default function App() {
         <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shadow-sm z-10">
             <h2 className="text-lg font-bold text-slate-800 capitalize">{activeTab}</h2>
             <div className="flex items-center gap-4">
-               {/* Global Search placeholder */}
                <div className="relative hidden md:block"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16}/><input className="pl-9 pr-4 py-2 bg-slate-100 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-64 transition-all" placeholder="Search database..." /></div>
             </div>
         </header>
 
         <div className="flex-1 overflow-y-auto p-8">
+            {/* DASHBOARD TAB (Updated) */}
+            {activeTab === 'dashboard' && (
+                <div className="grid grid-cols-1 gap-6">
+                    <div className="bg-white rounded-xl border shadow-sm overflow-hidden flex flex-col h-full">
+                        <div className="px-6 py-4 border-b bg-slate-50 font-bold text-slate-800 flex items-center justify-between">
+                             <span className="flex items-center gap-2"><CalendarDays size={18}/> Upcoming Committee Hearings</span>
+                             <button onClick={fetchCommitteeMeetings} className="text-blue-600 hover:text-blue-800"><RefreshCcw size={14} className={isScanning ? "animate-spin" : ""}/></button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                            {meetings.length === 0 ? (
+                                <div className="text-center text-slate-400 py-10">
+                                   {isScanning ? "Scanning Schedule..." : "No upcoming meetings found for your committees."}
+                                </div>
+                            ) : (
+                                meetings.map((m, i) => (
+                                    <div key={i} className="border border-slate-100 rounded-lg p-3 hover:bg-slate-50">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div>
+                                                <div className="text-sm font-bold text-slate-900">{m.committee}</div>
+                                                <div className="text-xs text-slate-500">{m.date}</div>
+                                            </div>
+                                            <span className="text-[10px] bg-slate-200 px-2 py-1 rounded font-bold text-slate-600">{m.agency}</span>
+                                        </div>
+                                        {m.bills.length > 0 && (
+                                            <div className="mt-2 pl-2 border-l-2 border-slate-200">
+                                                {m.bills.map((b, idx) => (
+                                                    <div key={idx} className="text-xs text-slate-700 py-0.5 truncate flex items-center gap-2">
+                                                        <button 
+                                                            onClick={() => handleOpenBillFromDashboard(b.billId)}
+                                                            className="font-mono font-bold text-blue-600 hover:underline"
+                                                        >
+                                                            {b.billId}
+                                                        </button>
+                                                        <span className="text-slate-500 truncate">{b.desc}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* LEGISLATION TAB */}
             {activeTab === 'legislation' && (
                 <div className="space-y-4">
@@ -799,9 +875,6 @@ export default function App() {
                             <button onClick={fetchSheetData} disabled={isScanning} className="text-blue-600 text-xs font-bold flex items-center gap-1">
                                 <RefreshCcw size={12} className={isScanning ? "animate-spin" : ""}/> Refresh Sheet
                             </button>
-                            <button onClick={handleRunDriveTool} className="text-green-600 text-xs font-bold flex items-center gap-1 border border-green-200 px-2 py-1 rounded hover:bg-green-50">
-                                <Play size={12}/> Run Drive Tool
-                            </button>
                         </div>
                     </div>
 
@@ -812,13 +885,14 @@ export default function App() {
                                     <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('id')}>Bill</th>
                                     <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('title')}>Title</th>
                                     <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('sponsor')}>Sponsor</th>
-                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('committee')}>Committee</th>
-                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('status')}>Status</th>
+                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('committee')}>Bill Action</th>
+                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('year')}>Year</th>
+                                    <th className="px-6 py-4 text-right">Actions</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
                                 {getFilteredBills().length === 0 ? (
-                                    <tr><td colSpan="5" className="p-8 text-center text-slate-400">Loading Bills from Sheet...</td></tr>
+                                    <tr><td colSpan="6" className="p-8 text-center text-slate-400">Loading Sheet Data...</td></tr>
                                 ) : (
                                     getFilteredBills().map(bill => (
                                         <tr key={bill.id} className="hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => setWorkspaceBill(bill)}>
@@ -826,29 +900,13 @@ export default function App() {
                                             <td className="px-6 py-4 font-medium text-slate-900 truncate max-w-xs" title={bill.title}>{bill.title}</td>
                                             <td className="px-6 py-4 text-slate-600">{bill.sponsor}</td>
                                             <td className="px-6 py-4 text-slate-500">{bill.committee}</td>
-                                            <td className="px-6 py-4">
-                                                <span className={`px-2 py-1 rounded-full text-xs font-bold ${bill.status.includes('Passed') ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
-                                                    {bill.status}
-                                                </span>
-                                            </td>
+                                            <td className="px-6 py-4 text-slate-500">{bill.year}</td>
+                                            <td className="px-6 py-4 text-right"><Edit2 size={16} className="text-slate-400"/></td>
                                         </tr>
                                     ))
                                 )}
                             </tbody>
                         </table>
-                    </div>
-                </div>
-            )}
-            
-            {activeTab === 'dashboard' && (
-                <div className="grid grid-cols-3 gap-6">
-                    <div className="bg-white p-6 rounded-xl border shadow-sm">
-                        <h3 className="text-slate-500 text-xs font-bold uppercase mb-2">Total Bills</h3>
-                        <div className="text-3xl font-bold text-slate-900">{bills.length}</div>
-                    </div>
-                    <div className="bg-white p-6 rounded-xl border shadow-sm">
-                        <h3 className="text-slate-500 text-xs font-bold uppercase mb-2">My Sponsorships</h3>
-                        <div className="text-3xl font-bold text-slate-900">{bills.filter(b => b.sponsor.includes("Penner")).length}</div>
                     </div>
                 </div>
             )}
