@@ -72,13 +72,14 @@ import {
 
 /* --- 0. CONFIGURATION & UTILITIES --- */
 
-// YOUR GOOGLE WEB APP URL
-const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby_nACVi5RzeOjqGtbelPnrDmX9gE270omfN1zqsLZAVNOxaJ1VPdCF7DWgQbMQ4kngFw/exec"; 
+// UPDATED: New Web App URL provided
+const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyDmmhMR5MIZ2klnElIGdbeqvAJfyVlh1e92DViE1HXwwKZn1XrxqkywMi1Vney1N8mPg/exec"; 
 const GOOGLE_SCRIPT_SECRET = "my-secret-password";
 const GOOGLE_SHEET_ID = "1RNiCiYFUp8KLzxZY3DaEbLEH3afoYHUbHa-wCF4BEYE";
 const SHEET_CSV_URL = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv`;
+const MASTER_DRIVE_FOLDER = "https://drive.google.com/drive/folders/18SWSFBRsX7pwuGHkCioedsFFzve-nWCB";
 
-// UTILITY: Parse CSV Line (Moved to top level function for safety)
+// UTILITY: Parse CSV Line
 function parseCSVLine(line) {
   const result = [];
   let current = '';
@@ -168,7 +169,7 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
       );
       if (!response.ok) {
           const text = await response.text();
-          throw new Error(`HTTP error! status: ${response.status} - ${text.substring(0, 100)}`);
+          throw new Error(`HTTP error! status: ${response.status} - ${text}`);
       }
       const data = await response.json();
       return data.candidates?.[0]?.content?.parts?.[0]?.text || null;
@@ -290,13 +291,14 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
        const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(GOOGLE_SCRIPT_URL)}`;
        
        // Sending command to your script to look up files for this bill ID
+       // UPDATED: Sending FULL ID (e.g. "HB 2200") to match folder name "HB 2200 - Title"
        const res = await fetch(proxyUrl, {
            method: 'POST',
            redirect: 'follow', // Follow redirects from Google Script
            headers: { 'Content-Type': 'text/plain;charset=utf-8' }, 
            body: JSON.stringify({ 
                action: "get_bill_files", 
-               billId: bill.id.replace(/[^0-9]/g, ''), 
+               billId: bill.id, 
                secret: GOOGLE_SCRIPT_SECRET 
            })
        });
@@ -307,7 +309,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
             json = JSON.parse(text);
        } catch(e) {
            console.warn("Drive Tool returned non-JSON:", text.substring(0, 50));
-           setStatusMsg("Access denied by Drive. Please open folder manually.");
+           setStatusMsg("Access denied by Drive. Please check Web App 'Who has access' settings.");
            setIsScanning(false);
            return;
        }
@@ -321,14 +323,13 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
            // 2. Process Files
            if (json.files && json.files.length > 0) {
                const newDocs = json.files.map(f => {
-                   // Convert drive viewer link to direct download link for processing
                    const downloadUrl = `https://drive.google.com/uc?export=download&id=${f.id}`;
                    
                    return {
                        id: f.id,
                        title: f.name,
                        type: f.name.toLowerCase().includes("fiscal") ? "Fiscal Note" : "Document",
-                       url: f.url, // Viewer link
+                       url: f.url, 
                        downloadUrl: downloadUrl, 
                        content: "", // Will be filled if analyzed
                        imported: false,
@@ -349,11 +350,13 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                setStatusMsg("Folder found, but no files inside.");
            }
        } else {
-           setStatusMsg(json.message || "Folder not found in Drive.");
+           // If folder not found via API, we just don't have files yet.
+           // User can still click "Open Folder" to go to master folder.
+           setStatusMsg("Folder not found via API. Check Drive manually.");
        }
     } catch (e) {
         console.error(e);
-        setStatusMsg("Connection to Drive Tool failed.");
+        setStatusMsg("Connection error.");
     } finally {
         setIsScanning(false);
     }
@@ -379,6 +382,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
         updatedDocs[docIndex] = { ...docToImport, content: content || "Text extracted.", imported: true };
         setDocuments(updatedDocs);
         setStatusMsg("Imported to database.");
+        onSave({ ...bill, documents: updatedDocs });
     } catch(e) {
         setStatusMsg("Import failed. AI will use metadata only.");
     }
@@ -404,7 +408,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
              if (d.content && d.content.length > 50) {
                  context += `--- ${d.title} ---\n${d.content.substring(0, 3000)}...\n\n`;
              } else {
-                 context += `--- ${d.title} ---\n(Content not imported yet. URL: ${d.url})\n`;
+                 context += `--- ${d.title} ---\n(Content not imported. Link: ${d.url})\n`;
              }
         });
     }
@@ -417,14 +421,13 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
   };
 
   const openDriveFolder = () => {
-      // Use the verified link from API if available, else master folder
-      if (driveLink) {
+      // Use stored link if valid
+      if (driveLink && driveLink.startsWith('http')) {
           window.open(driveLink, '_blank');
-      } else if (bill.driveLink) {
-          window.open(bill.driveLink, '_blank');
       } else {
-          // Fallback search
-          const searchUrl = `https://drive.google.com/drive/u/0/search?q=type:folder%20${bill.id}`;
+          // Fallback search strictly for "HB 1234 -" to match naming convention
+          const query = `type:folder name contains '${bill.id} -'`;
+          const searchUrl = `https://drive.google.com/drive/u/0/search?q=${encodeURIComponent(query)}`;
           window.open(searchUrl, '_blank');
       }
   };
@@ -445,7 +448,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
         </div>
 
         {/* Toolbar */}
-        <div className="bg-slate-100 border-b border-slate-200 px-4 flex gap-1">
+        <div className="bg-slate-100 border-b border-slate-200 px-4 flex gap-1 items-center">
             {['summary', 'docs', 'chat'].map(tab => (
                 <button 
                   key={tab}
@@ -457,7 +460,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                     {tab === 'chat' && <span className="flex items-center gap-2"><Sparkles size={16}/> AI Analysis</span>}
                 </button>
             ))}
-            <div className="ml-auto flex items-center">
+            <div className="ml-auto flex items-center gap-2">
                  <button onClick={openDriveFolder} className="text-xs flex items-center gap-1 text-slate-500 hover:text-green-600 font-bold px-3 py-1 border border-slate-300 rounded bg-white shadow-sm hover:shadow">
                      <HardDrive size={14}/> Open Folder
                  </button>
@@ -538,8 +541,8 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                         {chatLog.length === 0 && (
                             <div className="text-center text-slate-400 py-10">
                                 <Sparkles size={32} className="mx-auto mb-2 text-yellow-400"/>
-                                <p>Ready to discuss {bill.id}.</p>
-                                <p className="text-xs">Select documents in the 'Documents' tab for reference.</p>
+                                <p>Ready to analyze {bill.id}.</p>
+                                <p className="text-xs">Select documents in the 'Documents' tab. I'll attempt to read them for context.</p>
                             </div>
                         )}
                         {chatLog.map((msg, i) => (
@@ -678,15 +681,7 @@ export default function App() {
   // Actions
   const handleSaveBill = async (bill) => {
       // Update local state immediately
-      setBills(prev => {
-        const idx = prev.findIndex(b => b.id === bill.id);
-        if (idx >= 0) {
-            const newArr = [...prev];
-            newArr[idx] = bill;
-            return newArr;
-        }
-        return [bill, ...prev];
-      });
+      setBills(prev => prev.map(b => b.id === bill.id ? bill : b));
       
       // Persist to Cloud (User specific override)
       if(!user || !db) return;
@@ -699,6 +694,24 @@ export default function App() {
               driveLink: bill.driveLink
           }, { merge: true });
       } catch(e) { console.error("Save failed", e); }
+  };
+
+  const handleRunDriveTool = async () => {
+      if(!GOOGLE_SCRIPT_URL) return;
+      setIsScanning(true);
+      try {
+          // Trigger Google Apps Script via blind POST (no-cors)
+          await fetch(GOOGLE_SCRIPT_URL, {
+              method: 'POST',
+              mode: 'no-cors',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: "run_all", secret: GOOGLE_SCRIPT_SECRET })
+          });
+          alert("Drive Maintenance Tool triggered. Check your Google Sheet in a few minutes, then click 'Refresh Sheet'.");
+      } catch(e) {
+          alert("Trigger failed.");
+      }
+      setIsScanning(false);
   };
 
   const getFilteredBills = () => {
@@ -783,7 +796,12 @@ export default function App() {
                              <button onClick={() => setFilterRole('My Bills')} className={`px-3 py-1 text-xs rounded-full border ${filterRole === 'My Bills' ? 'bg-slate-800 text-white' : 'bg-white'}`}>My Sponsorships</button>
                         </div>
                         <div className="flex gap-2">
-                            {/* Buttons Removed */}
+                            <button onClick={fetchSheetData} disabled={isScanning} className="text-blue-600 text-xs font-bold flex items-center gap-1">
+                                <RefreshCcw size={12} className={isScanning ? "animate-spin" : ""}/> Refresh Sheet
+                            </button>
+                            <button onClick={handleRunDriveTool} className="text-green-600 text-xs font-bold flex items-center gap-1 border border-green-200 px-2 py-1 rounded hover:bg-green-50">
+                                <Play size={12}/> Run Drive Tool
+                            </button>
                         </div>
                     </div>
 
@@ -793,15 +811,14 @@ export default function App() {
                                 <tr>
                                     <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('id')}>Bill</th>
                                     <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('title')}>Title</th>
-                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('sponsor')}>Primary Sponsor</th>
-                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('committee')}>Bill Action</th>
-                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('year')}>Year</th>
-                                    <th className="px-6 py-4 text-right">Actions</th>
+                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('sponsor')}>Sponsor</th>
+                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('committee')}>Committee</th>
+                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('status')}>Status</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
                                 {getFilteredBills().length === 0 ? (
-                                    <tr><td colSpan="6" className="p-8 text-center text-slate-400">Loading Sheet Data...</td></tr>
+                                    <tr><td colSpan="5" className="p-8 text-center text-slate-400">Loading Bills from Sheet...</td></tr>
                                 ) : (
                                     getFilteredBills().map(bill => (
                                         <tr key={bill.id} className="hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => setWorkspaceBill(bill)}>
@@ -809,8 +826,11 @@ export default function App() {
                                             <td className="px-6 py-4 font-medium text-slate-900 truncate max-w-xs" title={bill.title}>{bill.title}</td>
                                             <td className="px-6 py-4 text-slate-600">{bill.sponsor}</td>
                                             <td className="px-6 py-4 text-slate-500">{bill.committee}</td>
-                                            <td className="px-6 py-4 text-slate-500">{bill.year}</td>
-                                            <td className="px-6 py-4 text-right"><Edit2 size={16} className="text-slate-400"/></td>
+                                            <td className="px-6 py-4">
+                                                <span className={`px-2 py-1 rounded-full text-xs font-bold ${bill.status.includes('Passed') ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
+                                                    {bill.status}
+                                                </span>
+                                            </td>
                                         </tr>
                                     ))
                                 )}
