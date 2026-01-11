@@ -72,12 +72,39 @@ import {
 
 /* --- 0. CONFIGURATION & UTILITIES --- */
 
+// YOUR GOOGLE WEB APP URL
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby_nACVi5RzeOjqGtbelPnrDmX9gE270omfN1zqsLZAVNOxaJ1VPdCF7DWgQbMQ4kngFw/exec"; 
 const GOOGLE_SCRIPT_SECRET = "my-secret-password";
 const GOOGLE_SHEET_ID = "1RNiCiYFUp8KLzxZY3DaEbLEH3afoYHUbHa-wCF4BEYE";
 const SHEET_CSV_URL = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv`;
 
-// PDF Text Extractor
+// UTILITY: Parse CSV Line (Moved to top level function for safety)
+function parseCSVLine(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"'; // Escaped quote
+        i++;
+      } else {
+        inQuotes = !inQuotes; // Toggle quotes
+      }
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
+// PDF Text Extractor using PDF.js via CDN
 const extractTextFromPDF = async (url) => {
   try {
     if (!window.pdfjsLib) {
@@ -88,12 +115,15 @@ const extractTextFromPDF = async (url) => {
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     }
 
+    // Attempt to use corsproxy to fetch the PDF bytes
     const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+    
     const loadingTask = window.pdfjsLib.getDocument(proxyUrl);
     const pdf = await loadingTask.promise;
     
     let fullText = "";
-    const maxPages = Math.min(pdf.numPages, 10); 
+    // Limit pages to avoid huge payloads
+    const maxPages = Math.min(pdf.numPages, 15); 
     for (let i = 1; i <= maxPages; i++) {
       const page = await pdf.getPage(i);
       const textContent = await page.getTextContent();
@@ -107,25 +137,9 @@ const extractTextFromPDF = async (url) => {
   }
 };
 
-// Robust Fetch
-const fetchProxyContent = async (targetUrl) => {
-  const tryAllOrigins = async () => {
-    const response = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`);
-    if (!response.ok) throw new Error(`AllOrigins status: ${response.status}`);
-    const data = await response.json();
-    return data.contents;
-  };
-  const tryCorsProxy = async () => {
-    const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`);
-    if (!response.ok) throw new Error(`CorsProxy status: ${response.status}`);
-    return await response.text();
-  };
-  try { return await tryAllOrigins(); } 
-  catch (e) { return await tryCorsProxy(); }
-};
+/* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
 
-/* --- 1. CONFIGURATION --- */
-
+// Safe environment variable access for Gemini
 let apiKey = "";
 try {
   // @ts-ignore
@@ -152,7 +166,10 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }
       );
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`HTTP error! status: ${response.status} - ${text.substring(0, 100)}`);
+      }
       const data = await response.json();
       return data.candidates?.[0]?.content?.parts?.[0]?.text || null;
     } catch (error) {
@@ -162,6 +179,29 @@ const callGemini = async (prompt, systemContext = "general", retries = 3) => {
   }
 };
 
+// Robust Fetch Utility
+const fetchProxyContent = async (targetUrl) => {
+  const tryAllOrigins = async () => {
+    const response = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`);
+    if (!response.ok) throw new Error(`AllOrigins status: ${response.status}`);
+    const text = await response.text();
+    try {
+        const data = JSON.parse(text);
+        return data.contents;
+    } catch(e) {
+        throw new Error("AllOrigins returned non-JSON");
+    }
+  };
+  const tryCorsProxy = async () => {
+    const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`);
+    if (!response.ok) throw new Error(`CorsProxy status: ${response.status}`);
+    return await response.text();
+  };
+  try { return await tryAllOrigins(); } 
+  catch (e) { return await tryCorsProxy(); }
+};
+
+/* --- 2. FIREBASE CONFIGURATION --- */
 let firebaseConfig = {};
 try {
   if (typeof __firebase_config !== 'undefined') {
@@ -200,7 +240,7 @@ const FEED_CONFIG = [
   { url: "https://www.spokesman.com/feeds/stories/", name: "Spokesman Main", category: "Media" }
 ];
 
-/* --- 2. BILL WORKSPACE COMPONENT --- */
+/* --- 3. BILL WORKSPACE COMPONENT --- */
 
 const BillWorkspace = ({ bill, onClose, onSave }) => {
   const [activeTab, setActiveTab] = useState('summary'); 
@@ -212,16 +252,26 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
   const [chatInput, setChatInput] = useState('');
   const [chatLog, setChatLog] = useState([]);
   const [isThinking, setIsThinking] = useState(false);
+  
+  // Track Drive Link internally to ensure button updates
+  const [driveLink, setDriveLink] = useState(bill.driveLink || null);
 
-  // Auto-save changes
+  // Auto-save changes locally/cloud
   useEffect(() => {
     const timer = setTimeout(() => {
         if(summaryText !== bill.summary || documents.length !== (bill.documents?.length || 0)) {
-            onSave({ ...bill, summary: summaryText, documents });
+            onSave({ ...bill, summary: summaryText, documents, driveLink });
         }
     }, 1000);
     return () => clearTimeout(timer);
-  }, [summaryText, documents]);
+  }, [summaryText, documents, driveLink]);
+
+  // Initial Auto-Load of Drive Files if not present
+  useEffect(() => {
+    if (documents.length === 0 && !isScanning) {
+        fetchDriveFiles();
+    }
+  }, []);
 
   const toggleDocSelect = (id) => {
       const newSet = new Set(selectedDocIds);
@@ -233,7 +283,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
   // CALL GOOGLE SCRIPT TO GET FILE LIST FROM DRIVE
   const fetchDriveFiles = async () => {
     setIsScanning(true);
-    setStatusMsg("Connecting to Drive API...");
+    setStatusMsg("Querying Google Drive...");
     
     try {
        // Using CorsProxy to hit your Web App
@@ -242,6 +292,8 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
        // Sending command to your script to look up files for this bill ID
        const res = await fetch(proxyUrl, {
            method: 'POST',
+           redirect: 'follow', // Follow redirects from Google Script
+           headers: { 'Content-Type': 'text/plain;charset=utf-8' }, 
            body: JSON.stringify({ 
                action: "get_bill_files", 
                billId: bill.id.replace(/[^0-9]/g, ''), 
@@ -249,34 +301,86 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
            })
        });
        
-       const json = await res.json();
+       const text = await res.text();
+       let json;
+       try {
+            json = JSON.parse(text);
+       } catch(e) {
+           console.warn("Drive Tool returned non-JSON:", text.substring(0, 50));
+           setStatusMsg("Access denied by Drive. Please open folder manually.");
+           setIsScanning(false);
+           return;
+       }
        
-       if(json.status === "success" && json.files) {
-           const newDocs = json.files.map(f => {
-               // Convert drive viewer link to direct download link for processing
-               const downloadUrl = `https://drive.google.com/uc?export=download&id=${f.id}`;
+       if(json.status === "success") {
+           // 1. Update the Folder Link if script returns it
+           if (json.folderUrl) {
+               setDriveLink(json.folderUrl);
+           }
+
+           // 2. Process Files
+           if (json.files && json.files.length > 0) {
+               const newDocs = json.files.map(f => {
+                   // Convert drive viewer link to direct download link for processing
+                   const downloadUrl = `https://drive.google.com/uc?export=download&id=${f.id}`;
+                   
+                   return {
+                       id: f.id,
+                       title: f.name,
+                       type: f.name.toLowerCase().includes("fiscal") ? "Fiscal Note" : "Document",
+                       url: f.url, // Viewer link
+                       downloadUrl: downloadUrl, 
+                       content: "", // Will be filled if analyzed
+                       imported: false,
+                       date: new Date().toLocaleDateString()
+                   };
+               });
                
-               return {
-                   id: f.id,
-                   title: f.name,
-                   type: f.name.toLowerCase().includes("fiscal") ? "Fiscal Note" : "Document",
-                   url: f.url, // Viewer link
-                   downloadUrl: downloadUrl, 
-                   content: "", // Will be filled if analyzed
-                   date: new Date().toLocaleDateString()
-               };
-           });
-           setDocuments(newDocs);
-           onSave({ ...bill, documents: newDocs });
-           setStatusMsg(`Synced ${newDocs.length} files from Drive.`);
+               // Merge with existing
+               const mergedDocs = [...documents];
+               newDocs.forEach(nd => {
+                   if(!mergedDocs.find(d => d.id === nd.id)) mergedDocs.push(nd);
+               });
+
+               setDocuments(mergedDocs);
+               onSave({ ...bill, documents: mergedDocs, driveLink: json.folderUrl });
+               setStatusMsg(`Synced ${newDocs.length} files from Drive.`);
+           } else {
+               setStatusMsg("Folder found, but no files inside.");
+           }
        } else {
-           setStatusMsg("No files returned. Check Drive folder name.");
+           setStatusMsg(json.message || "Folder not found in Drive.");
        }
     } catch (e) {
         console.error(e);
-        setStatusMsg("API Error. Please open Drive directly.");
+        setStatusMsg("Connection to Drive Tool failed.");
     } finally {
         setIsScanning(false);
+    }
+  };
+
+  const importDocContent = async (docId) => {
+    const docIndex = documents.findIndex(d => d.id === docId);
+    if(docIndex === -1) return;
+    const docToImport = documents[docIndex];
+    
+    setStatusMsg(`Importing ${docToImport.title}...`);
+    try {
+        let content = "";
+        // If it's a PDF, try to read it
+        if(docToImport.title.toLowerCase().endsWith('.pdf') || docToImport.type === 'Fiscal Note') {
+            content = await extractTextFromPDF(docToImport.downloadUrl);
+        } else {
+            // Assume text/html
+            content = await fetchProxyContent(docToImport.downloadUrl);
+        }
+        
+        const updatedDocs = [...documents];
+        updatedDocs[docIndex] = { ...docToImport, content: content || "Text extracted.", imported: true };
+        setDocuments(updatedDocs);
+        setStatusMsg("Imported to database.");
+    } catch(e) {
+        setStatusMsg("Import failed. AI will use metadata only.");
     }
   };
 
@@ -294,34 +398,15 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
     
     const relevantDocs = documents.filter(d => selectedDocIds.has(d.id));
     
-    let docsContext = "";
     if (relevantDocs.length > 0) {
-        setStatusMsg("Reading selected docs...");
-        for (const d of relevantDocs) {
-             if (d.content) {
-                 docsContext += `--- ${d.title} ---\n${d.content.substring(0, 3000)}...\n\n`;
-             } else if (d.downloadUrl) {
-                 // Try to read it now
-                 try {
-                    const text = await extractTextFromPDF(d.downloadUrl);
-                    if (text) {
-                        d.content = text; 
-                        docsContext += `--- ${d.title} ---\n${text.substring(0, 3000)}...\n\n`;
-                    } else {
-                        docsContext += `--- ${d.title} ---\n(Could not auto-read PDF content. URL: ${d.url})\n\n`;
-                    }
-                 } catch(e) {
-                     docsContext += `--- ${d.title} ---\n(Error reading PDF)\n\n`;
-                 }
+        context += `SELECTED DOCUMENTS:\n`;
+        relevantDocs.forEach(d => {
+             if (d.content && d.content.length > 50) {
+                 context += `--- ${d.title} ---\n${d.content.substring(0, 3000)}...\n\n`;
+             } else {
+                 context += `--- ${d.title} ---\n(Content not imported yet. URL: ${d.url})\n`;
              }
-        }
-        setStatusMsg("Ready.");
-    }
-
-    if (docsContext) {
-        context += `SELECTED DOCUMENTS CONTENT:\n${docsContext}`;
-    } else {
-        context += `(No specific documents selected. Using general context.)`;
+        });
     }
 
     const prompt = `Context:\n${context}\n\nUser Question: ${userMsg}`;
@@ -332,9 +417,16 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
   };
 
   const openDriveFolder = () => {
-      // Smart search for folder by name using bill ID
-      const searchUrl = `https://drive.google.com/drive/u/0/search?q=type:folder%20${bill.id}`;
-      window.open(searchUrl, '_blank');
+      // Use the verified link from API if available, else master folder
+      if (driveLink) {
+          window.open(driveLink, '_blank');
+      } else if (bill.driveLink) {
+          window.open(bill.driveLink, '_blank');
+      } else {
+          // Fallback search
+          const searchUrl = `https://drive.google.com/drive/u/0/search?q=type:folder%20${bill.id}`;
+          window.open(searchUrl, '_blank');
+      }
   };
 
   return (
@@ -366,7 +458,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                 </button>
             ))}
             <div className="ml-auto flex items-center">
-                 <button onClick={openDriveFolder} className="text-xs flex items-center gap-1 text-slate-500 hover:text-green-600 font-bold px-3 py-1">
+                 <button onClick={openDriveFolder} className="text-xs flex items-center gap-1 text-slate-500 hover:text-green-600 font-bold px-3 py-1 border border-slate-300 rounded bg-white shadow-sm hover:shadow">
                      <HardDrive size={14}/> Open Folder
                  </button>
             </div>
@@ -386,7 +478,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                         className="flex-1 w-full border border-slate-200 rounded-lg p-6 text-sm font-serif leading-relaxed shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                         value={summaryText}
                         onChange={(e) => setSummaryText(e.target.value)}
-                        placeholder="Start typing your summary here..."
+                        placeholder="Loading summary from sheet..."
                     />
                 </div>
             )}
@@ -395,10 +487,10 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
             {activeTab === 'docs' && (
                 <div className="h-full p-6 flex flex-col">
                      <div className="flex justify-between items-center mb-4">
-                        <h3 className="font-bold text-slate-800">Documents in Google Drive</h3>
+                        <h3 className="font-bold text-slate-800">Files in Google Drive</h3>
                         <button onClick={fetchDriveFiles} disabled={isScanning} className="bg-slate-800 hover:bg-slate-700 text-white px-3 py-2 rounded-lg text-sm font-bold flex items-center gap-2">
                             {isScanning ? <Loader size={16} className="animate-spin"/> : <RefreshCw size={16}/>}
-                            {isScanning ? "Scanning..." : "Scan Folder"}
+                            {isScanning ? "Scanning Drive..." : "Rescan Folder"}
                         </button>
                      </div>
                      
@@ -406,8 +498,8 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                         {documents.length === 0 ? (
                             <div className="text-center py-20 text-slate-400 border-2 border-dashed border-slate-200 rounded-lg">
                                 <FolderOpen size={48} className="mx-auto mb-2 opacity-20"/>
-                                <p>No files tracked yet.</p>
-                                <p className="text-xs">Click 'Scan Folder' to pull file list from Google Drive.</p>
+                                <p>No files found.</p>
+                                <p className="text-xs">Click 'Rescan Folder' to check Google Drive.</p>
                             </div>
                         ) : (
                             documents.map((doc, i) => (
@@ -416,17 +508,18 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                                         <button onClick={() => toggleDocSelect(doc.id)} className="text-slate-400 hover:text-blue-600">
                                             {selectedDocIds.has(doc.id) ? <CheckSquare size={20} className="text-blue-600"/> : <Square size={20}/>}
                                         </button>
-                                        <div className={`p-2 rounded bg-slate-100 text-slate-500`}>
-                                            <FileText size={20}/>
-                                        </div>
+                                        <div className="p-2 rounded bg-slate-100 text-slate-500"><FileType size={20}/></div>
                                         <div>
                                             <div className="font-bold text-slate-800">{doc.title}</div>
-                                            <div className="text-xs text-slate-500 flex gap-2">
-                                                <span>{doc.type}</span>
-                                            </div>
+                                            <div className="text-xs text-slate-500 flex gap-2"><span>{doc.type}</span></div>
                                         </div>
                                     </div>
                                     <div className="flex gap-2">
+                                        {!doc.content && (
+                                            <button onClick={() => importDocContent(doc.id)} className="p-2 text-blue-600 hover:bg-blue-50 rounded text-xs font-bold border border-blue-200">
+                                                Import Text
+                                            </button>
+                                        )}
                                         <a href={doc.url} target="_blank" rel="noreferrer" className="p-2 text-blue-600 hover:bg-blue-50 rounded" title="Open in Google Drive">
                                             <ExternalLink size={18}/>
                                         </a>
@@ -446,7 +539,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                             <div className="text-center text-slate-400 py-10">
                                 <Sparkles size={32} className="mx-auto mb-2 text-yellow-400"/>
                                 <p>Ready to discuss {bill.id}.</p>
-                                <p className="text-xs">Select documents in the 'Documents' tab. I'll attempt to read them for context.</p>
+                                <p className="text-xs">Select documents in the 'Documents' tab for reference.</p>
                             </div>
                         )}
                         {chatLog.map((msg, i) => (
@@ -502,10 +595,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    // 1. Initial Load from Sheet
+    // 1. Initial Load from Sheet (The Source of Truth)
     fetchSheetData();
 
-    // 2. Setup Firebase Sync for User Overrides
+    // 2. Setup Firebase Sync for User Overrides (Documents, Chat History)
     if (!user || !db) return;
     const billsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
     const unsubscribe = onSnapshot(billsRef, (snapshot) => {
@@ -515,10 +608,24 @@ export default function App() {
             const merged = [...prev];
             userBills.forEach(ub => {
                 const idx = merged.findIndex(p => p.id === ub.id);
-                if(idx >= 0) merged[idx] = ub;
-                else merged.push(ub);
+                if(idx >= 0) {
+                    // Only update if override exists, preserve structure
+                    merged[idx] = { ...merged[idx], ...ub };
+                } else {
+                    // It's a new bill added via app, not in sheet yet
+                    merged.push(ub);
+                }
             });
-            return merged;
+            // Ensure unique
+            const unique = [];
+            const map = new Map();
+            for (const item of merged) {
+                if(!map.has(item.id)){
+                    map.set(item.id, true);
+                    unique.push(item);
+                }
+            }
+            return unique;
         });
     });
     return () => unsubscribe();
@@ -527,30 +634,41 @@ export default function App() {
   const fetchSheetData = async () => {
       setIsScanning(true);
       try {
-          const response = await fetch(SHEET_CSV_URL);
+          // Use CorsProxy for CSV fetch if needed (Google Sheets CSV export usually allows CORS, but proxy is safer)
+          // Wrapping in try/catch to prevent JSON parse errors if proxy fails
+          const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(SHEET_CSV_URL)}`);
+          if (!response.ok) {
+              const text = await response.text();
+              throw new Error(`Fetch failed: ${response.status} ${text.substring(0,50)}`);
+          }
           const text = await response.text();
+          // Proper CSV parse
           const rows = text.split('\n').slice(1); // Skip header
           const parsedBills = rows.map(row => {
-              // CSV Parse
-              const cols = row.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g) || [];
-              const clean = (s) => s ? s.replace(/^"|"$/g, '').trim() : '';
-              
+              const cols = parseCSVLine(row);
               if(cols.length < 5) return null;
 
+              // MAP SHEET COLUMNS
+              const id = cols[0];
+              if(!id) return null;
+
               return {
-                  id: clean(cols[0]),
-                  title: clean(cols[1]),
-                  sponsor: clean(cols[2]),
-                  committee: clean(cols[3]),
-                  year: clean(cols[4]),
-                  status: clean(cols[5]),
-                  summary: clean(cols[1]), // Default summary to title
-                  role: clean(cols[2]).includes('Penner') ? 'Sponsor' : 'Watching',
+                  id: id,
+                  title: cols[1] || "No Title",
+                  sponsor: cols[2] || "Unknown",
+                  committee: cols[3] || "Unknown",
+                  year: cols[4] || "2025",
+                  status: cols[5] || "Unknown",
+                  driveLink: (cols[6] && cols[6].includes("drive.google.com")) ? cols[6] : null,
+                  summary: cols[1], 
+                  role: cols[2].includes('Penner') ? 'Sponsor' : 'Watching',
                   documents: []
               };
           }).filter(b => b && b.id);
           
-          if(parsedBills.length > 0) setBills(parsedBills);
+          if(parsedBills.length > 0) {
+             setBills(parsedBills);
+          }
       } catch (e) {
           console.error("Sheet Load Error", e);
       }
@@ -560,40 +678,27 @@ export default function App() {
   // Actions
   const handleSaveBill = async (bill) => {
       // Update local state immediately
-      setBills(prev => prev.map(b => b.id === bill.id ? bill : b));
+      setBills(prev => {
+        const idx = prev.findIndex(b => b.id === bill.id);
+        if (idx >= 0) {
+            const newArr = [...prev];
+            newArr[idx] = bill;
+            return newArr;
+        }
+        return [bill, ...prev];
+      });
       
-      // Persist specific bill data (docs, chat) to Cloud
+      // Persist to Cloud (User specific override)
       if(!user || !db) return;
       try {
           const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id);
-          // Only save specific fields to avoid overwriting sheet data on reload if structure differs
           await setDoc(ref, { 
               id: bill.id,
               documents: bill.documents || [],
-              summary: bill.summary
+              summary: bill.summary,
+              driveLink: bill.driveLink
           }, { merge: true });
       } catch(e) { console.error("Save failed", e); }
-  };
-
-  const handleRunDriveTool = async () => {
-      if(!GOOGLE_SCRIPT_URL) return;
-      setIsScanning(true);
-      try {
-          // Trigger Google Apps Script via blind POST (no-cors)
-          // We can't use proxy for this as it might timeout. Fire and forget.
-          await fetch(GOOGLE_SCRIPT_URL, {
-              method: 'POST',
-              mode: 'no-cors',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: "run_all", secret: GOOGLE_SCRIPT_SECRET })
-          });
-          alert("Drive Maintenance Tool triggered. Updates should appear in your Sheet shortly.");
-          // Wait a bit then refresh sheet
-          setTimeout(fetchSheetData, 5000);
-      } catch(e) {
-          alert("Trigger failed.");
-      }
-      setIsScanning(false);
   };
 
   const getFilteredBills = () => {
@@ -678,12 +783,7 @@ export default function App() {
                              <button onClick={() => setFilterRole('My Bills')} className={`px-3 py-1 text-xs rounded-full border ${filterRole === 'My Bills' ? 'bg-slate-800 text-white' : 'bg-white'}`}>My Sponsorships</button>
                         </div>
                         <div className="flex gap-2">
-                            <button onClick={fetchSheetData} disabled={isScanning} className="text-blue-600 text-xs font-bold flex items-center gap-1">
-                                <RefreshCcw size={12} className={isScanning ? "animate-spin" : ""}/> Refresh Sheet
-                            </button>
-                            <button onClick={handleRunDriveTool} className="text-green-600 text-xs font-bold flex items-center gap-1 border border-green-200 px-2 py-1 rounded hover:bg-green-50">
-                                <Play size={12}/> Run Drive Tool
-                            </button>
+                            {/* Buttons Removed */}
                         </div>
                     </div>
 
@@ -693,14 +793,15 @@ export default function App() {
                                 <tr>
                                     <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('id')}>Bill</th>
                                     <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('title')}>Title</th>
-                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('sponsor')}>Sponsor</th>
-                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('committee')}>Committee</th>
-                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('status')}>Status</th>
+                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('sponsor')}>Primary Sponsor</th>
+                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('committee')}>Bill Action</th>
+                                    <th className="px-6 py-4 cursor-pointer" onClick={() => setSortKey('year')}>Year</th>
+                                    <th className="px-6 py-4 text-right">Actions</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
                                 {getFilteredBills().length === 0 ? (
-                                    <tr><td colSpan="5" className="p-8 text-center text-slate-400">Loading Bills from Sheet...</td></tr>
+                                    <tr><td colSpan="6" className="p-8 text-center text-slate-400">Loading Sheet Data...</td></tr>
                                 ) : (
                                     getFilteredBills().map(bill => (
                                         <tr key={bill.id} className="hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => setWorkspaceBill(bill)}>
@@ -708,11 +809,8 @@ export default function App() {
                                             <td className="px-6 py-4 font-medium text-slate-900 truncate max-w-xs" title={bill.title}>{bill.title}</td>
                                             <td className="px-6 py-4 text-slate-600">{bill.sponsor}</td>
                                             <td className="px-6 py-4 text-slate-500">{bill.committee}</td>
-                                            <td className="px-6 py-4">
-                                                <span className={`px-2 py-1 rounded-full text-xs font-bold ${bill.status.includes('Passed') ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
-                                                    {bill.status}
-                                                </span>
-                                            </td>
+                                            <td className="px-6 py-4 text-slate-500">{bill.year}</td>
+                                            <td className="px-6 py-4 text-right"><Edit2 size={16} className="text-slate-400"/></td>
                                         </tr>
                                     ))
                                 )}
