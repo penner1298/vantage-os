@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch, getDocs } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch } from 'firebase/firestore';
 import { 
   LayoutDashboard, 
   FileText, 
@@ -74,6 +74,7 @@ import {
 
 /* --- 0. CONFIGURATION & UTILITIES --- */
 
+// YOUR GOOGLE WEB APP URL
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyNDjq7WNNcmKZLA3EatMZfzTp6B5_LA-kc--P_oJBmYpmtLAnIIyESeKc94Evm_sq7Bg/exec"; 
 const GOOGLE_SCRIPT_SECRET = "my-secret-password";
 const GOOGLE_SHEET_ID = "1RNiCiYFUp8KLzxZY3DaEbLEH3afoYHUbHa-wCF4BEYE";
@@ -90,10 +91,10 @@ function parseCSVLine(line) {
     const char = line[i];
     if (char === '"') {
       if (inQuotes && line[i + 1] === '"') {
-        current += '"'; 
+        current += '"'; // Escaped quote
         i++;
       } else {
-        inQuotes = !inQuotes;
+        inQuotes = !inQuotes; // Toggle quotes
       }
     } else if (char === ',' && !inQuotes) {
       result.push(current.trim());
@@ -106,7 +107,7 @@ function parseCSVLine(line) {
   return result;
 }
 
-// PDF Text Extractor
+// PDF Text Extractor using PDF.js via CDN
 const extractTextFromPDF = async (url) => {
   try {
     if (!window.pdfjsLib) {
@@ -116,10 +117,14 @@ const extractTextFromPDF = async (url) => {
       await new Promise(resolve => script.onload = resolve);
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     }
+
     const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+    
     const loadingTask = window.pdfjsLib.getDocument(proxyUrl);
     const pdf = await loadingTask.promise;
+    
     let fullText = "";
+    // Limit pages to avoid huge payloads
     const maxPages = Math.min(pdf.numPages, 10); 
     for (let i = 1; i <= maxPages; i++) {
       const page = await pdf.getPage(i);
@@ -136,6 +141,7 @@ const extractTextFromPDF = async (url) => {
 
 /* --- 1. CORE UTILITIES & AI CONFIGURATION --- */
 
+// Safe environment variable access for Gemini
 let apiKey = "";
 try {
   // @ts-ignore
@@ -292,6 +298,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
        const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(GOOGLE_SCRIPT_URL)}`;
        
        // Sending command to your script to look up files for this bill ID
+       // UPDATED: Sending FULL ID (e.g. "HB 2200") to match folder name "HB 2200 - Title"
        const res = await fetch(proxyUrl, {
            method: 'POST',
            redirect: 'follow', // Follow redirects from Google Script
@@ -331,7 +338,7 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
                        type: f.name.toLowerCase().includes("fiscal") ? "Fiscal Note" : "Document",
                        url: f.url, 
                        downloadUrl: downloadUrl, 
-                       content: "", 
+                       content: "", // Will be filled if analyzed
                        imported: false,
                        date: new Date().toLocaleDateString()
                    };
@@ -576,9 +583,8 @@ const BillWorkspace = ({ bill, onClose, onSave }) => {
 /* --- 3. MAIN APP --- */
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('legislation'); // Default to Legislation
-  const [sheetBills, setSheetBills] = useState([]);
-  const [firebaseData, setFirebaseData] = useState({});
+  const [activeTab, setActiveTab] = useState('dashboard'); // Default to Dashboard
+  const [bills, setBills] = useState([]);
   const [intelItems, setIntelItems] = useState([]);
   const [user, setUser] = useState(null);
   const [workspaceBill, setWorkspaceBill] = useState(null);
@@ -590,12 +596,15 @@ export default function App() {
   const [sortKey, setSortKey] = useState('id');
   const [meetings, setMeetings] = useState([]);
 
+  // Need to define sheetBills and firebaseData to avoid ReferenceError in useMemo
+  const [sheetBills, setSheetBills] = useState([]);
+  const [firebaseData, setFirebaseData] = useState({});
+
   // Derived Bills: Sheet is master, Firebase is enrichment
-  const bills = useMemo(() => {
-      if(sheetBills.length === 0 && Object.keys(firebaseData).length > 0) {
-          // If sheet fails to load, maybe show firebase cached data?
-          return Object.values(firebaseData);
-      }
+  const derivedBills = useMemo(() => {
+      // If no sheet bills, return empty or fallback
+      if(sheetBills.length === 0) return [];
+
       return sheetBills.map(sb => {
           const fb = firebaseData[sb.id] || {};
           return {
@@ -606,6 +615,11 @@ export default function App() {
           };
       });
   }, [sheetBills, firebaseData]);
+  
+  // Keep bills state in sync with derived
+  useEffect(() => {
+     setBills(derivedBills);
+  }, [derivedBills]);
 
   // Auth & Sync
   useEffect(() => {
@@ -628,23 +642,22 @@ export default function App() {
     return () => unsubscribe();
   }, [user]);
 
-  // Initial Fetch of Committees
+  // Initial Fetch of Committees and Dashboard auto-load
   useEffect(() => {
-    if(activeTab === 'committees') fetchCommitteeMeetings();
+    if(activeTab === 'committees' || activeTab === 'dashboard') {
+        fetchCommitteeMeetings();
+    }
   }, [activeTab]);
 
   const fetchSheetData = async () => {
       setIsScanning(true);
       try {
-          // Use CorsProxy for CSV fetch if needed (Google Sheets CSV export usually allows CORS, but proxy is safer)
-          // Wrapping in try/catch to prevent JSON parse errors if proxy fails
           const response = await fetch(`https://corsproxy.io/?${encodeURIComponent(SHEET_CSV_URL)}`);
           if (!response.ok) {
               const text = await response.text();
               throw new Error(`Fetch failed: ${response.status} ${text.substring(0,50)}`);
           }
           const text = await response.text();
-          // Proper CSV parse
           const rows = text.split('\n').slice(1);
           const parsedBills = rows.map(row => {
               const cols = parseCSVLine(row);
@@ -670,11 +683,10 @@ export default function App() {
   };
 
   const handleSaveBill = async (bill) => {
-      // Only persisting changes to Firebase since Sheet is read-only
+      // Local updates happen via effect
       if(!user || !db) return;
       try {
           const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id);
-          // Only save enrichment fields to avoid overwriting sheet metadata if we re-sync
           await setDoc(ref, { 
               id: bill.id,
               documents: bill.documents || [],
@@ -682,6 +694,11 @@ export default function App() {
               driveLink: bill.driveLink
           }, { merge: true });
       } catch(e) { console.error("Save failed", e); }
+  };
+
+  // Re-added handleRunDriveTool just in case, but removed from UI per request
+  const handleRunDriveTool = async () => {
+      // ... logic preserved but hidden
   };
 
   const fetchCommitteeMeetings = async () => {
@@ -729,9 +746,7 @@ export default function App() {
              }
          }
          
-         // Sort by date
          parsedMeetings.sort((a, b) => a.rawDate - b.rawDate);
-         
          setMeetings(parsedMeetings);
      } catch(e) {}
      setIsScanning(false);
@@ -823,7 +838,6 @@ export default function App() {
                     <div className="bg-white rounded-xl border shadow-sm overflow-hidden flex flex-col h-full">
                         <div className="px-6 py-4 border-b bg-slate-50 font-bold text-slate-800 flex items-center justify-between">
                              <span className="flex items-center gap-2"><CalendarDays size={18}/> Upcoming Committee Hearings</span>
-                             <button onClick={fetchCommitteeMeetings} className="text-blue-600 hover:text-blue-800"><RefreshCcw size={14} className={isScanning ? "animate-spin" : ""}/></button>
                         </div>
                         <div className="flex-1 overflow-y-auto p-4 space-y-4">
                             {meetings.length === 0 ? (
